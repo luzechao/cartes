@@ -1,0 +1,137 @@
+!  Phase 2 gate fixture — WORLD form.
+!
+!  The same building as gate-relative.idf, with every vertex written out in world
+!  coordinates. The numbers below were derived by hand from
+!
+!      world = (20 - x,  -y - 10,  z + 3)                       [zone surfaces]
+!      world = (y,  -x,  z)                                     [Shading:Building:Detailed]
+!      world = (x,  y,  z)                                      [Shading:Site:Detailed]
+!
+!  and not by running the resolver, so the Phase 2 gate compares two independent
+!  derivations rather than one implementation against itself.
+!
+!  Two traps are deliberate. The Zone still carries origin (10, 20, 3) and Direction of
+!  Relative North 90, and Building still carries North Axis 90 — none of which may move a
+!  vertex in World coordinates. A resolver that applies them anyway fails here rather than
+!  in someone's model six months from now.
+!
+!  Geometry only — no materials, schedules or run period. Not a runnable model.
+
+Version,
+  26.1;                    !- Version Identifier
+
+Building,
+  Gate Test,               !- Name
+  90,                      !- North Axis {deg}
+  Suburbs,                 !- Terrain
+  0.04,                    !- Loads Convergence Tolerance Value {W}
+  0.4,                     !- Temperature Convergence Tolerance Value {deltaC}
+  FullExterior,            !- Solar Distribution
+  25,                      !- Maximum Number of Warmup Days
+  6;                       !- Minimum Number of Warmup Days
+
+GlobalGeometryRules,
+  UpperLeftCorner,         !- Starting Vertex Position
+  Counterclockwise,        !- Vertex Entry Direction
+  World,                   !- Coordinate System
+  Relative,                !- Daylighting Reference Point Coordinate System
+  Relative;                !- Rectangular Surface Coordinate System
+
+Construction,
+  Generic Wall,            !- Name
+  Generic Layer;           !- Outside Layer
+
+Construction,
+  Generic Window,          !- Name
+  Generic Glazing;         !- Outside Layer
+
+Zone,
+  ZONE ONE,                !- Name
+  90,                      !- Direction of Relative North {deg}
+  10,                      !- X Origin {m}
+  20,                      !- Y Origin {m}
+  3,                       !- Z Origin {m}
+  1,                       !- Type
+  1,                       !- Multiplier
+  autocalculate,           !- Ceiling Height {m}
+  autocalculate,           !- Volume {m3}
+  autocalculate;           !- Floor Area {m2}
+
+BuildingSurface:Detailed,
+  FLOOR,                   !- Name
+  Floor,                   !- Surface Type
+  Generic Wall,            !- Construction Name
+  ZONE ONE,                !- Zone Name
+  ,                        !- Space Name
+  Ground,                  !- Outside Boundary Condition
+  ,                        !- Outside Boundary Condition Object
+  NoSun,                   !- Sun Exposure
+  NoWind,                  !- Wind Exposure
+  ,                        !- View Factor to Ground
+  4,                       !- Number of Vertices
+  20, -10, 3,              !- X,Y,Z Vertex 1 {m}
+  20, -14, 3,              !- X,Y,Z Vertex 2 {m}
+  14, -14, 3,              !- X,Y,Z Vertex 3 {m}
+  14, -10, 3;              !- X,Y,Z Vertex 4 {m}
+
+BuildingSurface:Detailed,
+  WALL SOUTH,              !- Name
+  Wall,                    !- Surface Type
+  Generic Wall,            !- Construction Name
+  ZONE ONE,                !- Zone Name
+  ,                        !- Space Name
+  Outdoors,                !- Outside Boundary Condition
+  ,                        !- Outside Boundary Condition Object
+  SunExposed,              !- Sun Exposure
+  WindExposed,             !- Wind Exposure
+  ,                        !- View Factor to Ground
+  4,                       !- Number of Vertices
+  20, -10, 6,              !- X,Y,Z Vertex 1 {m}
+  20, -10, 3,              !- X,Y,Z Vertex 2 {m}
+  14, -10, 3,              !- X,Y,Z Vertex 3 {m}
+  14, -10, 6;              !- X,Y,Z Vertex 4 {m}
+
+FenestrationSurface:Detailed,
+  WINDOW SOUTH,            !- Name
+  Window,                  !- Surface Type
+  Generic Window,          !- Construction Name
+  WALL SOUTH,              !- Building Surface Name
+  ,                        !- Outside Boundary Condition Object
+  ,                        !- View Factor to Ground
+  ,                        !- Frame and Divider Name
+  1,                       !- Multiplier
+  4,                       !- Number of Vertices
+  19, -10, 5.5,            !- X,Y,Z Vertex 1 {m}
+  19, -10, 3.5,            !- X,Y,Z Vertex 2 {m}
+  15, -10, 3.5,            !- X,Y,Z Vertex 3 {m}
+  15, -10, 5.5;            !- X,Y,Z Vertex 4 {m}
+
+Shading:Zone:Detailed,
+  OVERHANG SOUTH,          !- Name
+  WALL SOUTH,              !- Base Surface Name
+  ,                        !- Transmittance Schedule Name
+  4,                       !- Number of Vertices
+  19, -9.5, 6,             !- X,Y,Z Vertex 1 {m}
+  19, -10, 6,              !- X,Y,Z Vertex 2 {m}
+  15, -10, 6,              !- X,Y,Z Vertex 3 {m}
+  15, -9.5, 6;             !- X,Y,Z Vertex 4 {m}
+
+! Already rotated by the 90 degree building north axis. In World coordinates this object
+! receives the Appendix G rotation only, which is zero here, so these values pass through.
+Shading:Building:Detailed,
+  CARPORT,                 !- Name
+  ,                        !- Transmittance Schedule Name
+  4,                       !- Number of Vertices
+  10, 0, 4,                !- X,Y,Z Vertex 1 {m}
+  12, 0, 4,                !- X,Y,Z Vertex 2 {m}
+  12, -3, 4,               !- X,Y,Z Vertex 3 {m}
+  10, -3, 4;               !- X,Y,Z Vertex 4 {m}
+
+Shading:Site:Detailed,
+  NEIGHBOUR,               !- Name
+  ,                        !- Transmittance Schedule Name
+  4,                       !- Number of Vertices
+  30, 30, 0,               !- X,Y,Z Vertex 1 {m}
+  30, 32, 0,               !- X,Y,Z Vertex 2 {m}
+  33, 32, 0,               !- X,Y,Z Vertex 3 {m}
+  33, 30, 0;               !- X,Y,Z Vertex 4 {m}

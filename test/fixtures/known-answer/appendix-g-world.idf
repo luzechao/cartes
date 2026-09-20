@@ -1,0 +1,79 @@
+!  The Appendix G trap.
+!
+!  Coordinate System is World, so a reader that only implements "World means no transform"
+!  gets every vertex wrong. EnergyPlus applies Compliance:Building's rotation in both
+!  coordinate systems (SurfaceGeometry.cc, the CosBldgRotAppGonly branch):
+!
+!      theta = -90deg  =>  (x, y) -> (y, -x),  z unchanged
+!
+!  The Building North Axis of 45 degrees below is a distractor: in World coordinates it does
+!  not move a vertex, and it is not added to the Appendix G angle either. Only in Relative
+!  coordinates do the two combine.
+!
+!  Detached site shading is exempt from the rotation, which is the one place the two
+!  detached shading classes diverge.
+!
+!  Geometry only. Not a runnable model.
+
+Version,
+  26.1;                    !- Version Identifier
+
+Building,
+  Appendix G Baseline,     !- Name
+  45,                      !- North Axis {deg}
+  City,                    !- Terrain
+  0.04,                    !- Loads Convergence Tolerance Value {W}
+  0.4,                     !- Temperature Convergence Tolerance Value {deltaC}
+  FullExterior,            !- Solar Distribution
+  25,                      !- Maximum Number of Warmup Days
+  6;                       !- Minimum Number of Warmup Days
+
+Compliance:Building,
+  90;                      !- Building Rotation for Appendix G {deg}
+
+GlobalGeometryRules,
+  UpperLeftCorner,         !- Starting Vertex Position
+  Counterclockwise,        !- Vertex Entry Direction
+  World,                   !- Coordinate System
+  Relative,                !- Daylighting Reference Point Coordinate System
+  Relative;                !- Rectangular Surface Coordinate System
+
+Zone,
+  ZONE ONE,                !- Name
+  0,                       !- Direction of Relative North {deg}
+  0,                       !- X Origin {m}
+  0,                       !- Y Origin {m}
+  0;                       !- Z Origin {m}
+
+BuildingSurface:Detailed,
+  FLOOR,                   !- Name
+  Floor,                   !- Surface Type
+  Generic Wall,            !- Construction Name
+  ZONE ONE,                !- Zone Name
+  ,                        !- Space Name
+  Ground,                  !- Outside Boundary Condition
+  ,                        !- Outside Boundary Condition Object
+  NoSun,                   !- Sun Exposure
+  NoWind,                  !- Wind Exposure
+  ,                        !- View Factor to Ground
+  4,                       !- Number of Vertices
+  0, 0, 1,                 !- X,Y,Z Vertex 1 {m}
+  0, 4, 1,                 !- X,Y,Z Vertex 2 {m}
+  6, 4, 1,                 !- X,Y,Z Vertex 3 {m}
+  6, 0, 1;                 !- X,Y,Z Vertex 4 {m}
+
+Shading:Building:Detailed,
+  CARPORT,                 !- Name
+  ,                        !- Transmittance Schedule Name
+  3,                       !- Number of Vertices
+  2, 0, 5,                 !- X,Y,Z Vertex 1 {m}
+  0, 2, 5,                 !- X,Y,Z Vertex 2 {m}
+  0, 0, 5;                 !- X,Y,Z Vertex 3 {m}
+
+Shading:Site:Detailed,
+  NEIGHBOUR,               !- Name
+  ,                        !- Transmittance Schedule Name
+  3,                       !- Number of Vertices
+  9, 0, 0,                 !- X,Y,Z Vertex 1 {m}
+  0, 9, 0,                 !- X,Y,Z Vertex 2 {m}
+  0, 0, 0;                 !- X,Y,Z Vertex 3 {m}

@@ -1,0 +1,39 @@
+{
+  "name": "cartes",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Browser-based two-way 3D geometry editor for EnergyPlus IDF files",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest",
+    "typecheck": "tsc --noEmit",
+    "fetch-idd": "./scripts/fetch-idd.sh",
+    "fetch-fixtures": "./scripts/fetch-fixtures.sh",
+    "preprocess-idd": "tsx scripts/preprocess-idd.ts",
+    "setup": "npm run fetch-idd && npm run preprocess-idd && npm run fetch-fixtures"
+  },
+  "dependencies": {
+    "dexie": "^4.0.0",
+    "earcut": "^3.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "three": "^0.180.0",
+    "zundo": "^2.3.0",
+    "zustand": "^5.0.0"
+  },
+  "devDependencies": {
+    "@types/earcut": "^3.0.0",
+    "@types/node": "^26.2.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@types/three": "^0.180.0",
+    "@vitejs/plugin-react": "^5.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.7.0",
+    "vite": "^7.0.0",
+    "vitest": "^3.0.0"
+  }
+}

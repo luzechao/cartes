@@ -1,0 +1,149 @@
+!  Phase 2 gate fixture — RELATIVE form.
+!
+!  This file and gate-world.idf describe the same building in the two coordinate systems.
+!  Resolved world vertices must agree to within 1e-6 m. Every number in gate-world.idf was
+!  derived by hand from the definitions in docs/03-idf-geometry.md, not by running the
+!  resolver, so a sign error fails the test instead of agreeing with itself.
+!
+!  Zone origin (10, 20, 3), Direction of Relative North 90, Building North Axis 90.
+!  Both angles are negated and fed through a counter-clockwise matrix, so each is a net
+!  *clockwise* rotation by the stated angle:
+!
+!      theta = -90deg  =>  cos = 0, sin = -1  =>  (x, y) -> (y, -x)
+!
+!  Zone-relative vertices therefore map to world as:
+!
+!      rotate by zone north:  (x, y)      -> (y, -x)
+!      translate by origin:   (y, -x)     -> (y + 10, -x + 20)
+!      rotate by bldg north:  (y+10, ...) -> (-x + 20, -y - 10)
+!      z:                                    z + 3
+!
+!  i.e.  world = (20 - x,  -y - 10,  z + 3)
+!
+!  90 degrees is used deliberately: cos and sin land on 0 and -1, so the expected values are
+!  exact in binary and survive the round trip through decimal text.
+!
+!  Geometry only — no materials, schedules or run period. Not a runnable model.
+
+Version,
+  26.1;                    !- Version Identifier
+
+Building,
+  Gate Test,               !- Name
+  90,                      !- North Axis {deg}
+  Suburbs,                 !- Terrain
+  0.04,                    !- Loads Convergence Tolerance Value {W}
+  0.4,                     !- Temperature Convergence Tolerance Value {deltaC}
+  FullExterior,            !- Solar Distribution
+  25,                      !- Maximum Number of Warmup Days
+  6;                       !- Minimum Number of Warmup Days
+
+GlobalGeometryRules,
+  UpperLeftCorner,         !- Starting Vertex Position
+  Counterclockwise,        !- Vertex Entry Direction
+  Relative,                !- Coordinate System
+  Relative,                !- Daylighting Reference Point Coordinate System
+  Relative;                !- Rectangular Surface Coordinate System
+
+Construction,
+  Generic Wall,            !- Name
+  Generic Layer;           !- Outside Layer
+
+Construction,
+  Generic Window,          !- Name
+  Generic Glazing;         !- Outside Layer
+
+Zone,
+  ZONE ONE,                !- Name
+  90,                      !- Direction of Relative North {deg}
+  10,                      !- X Origin {m}
+  20,                      !- Y Origin {m}
+  3,                       !- Z Origin {m}
+  1,                       !- Type
+  1,                       !- Multiplier
+  autocalculate,           !- Ceiling Height {m}
+  autocalculate,           !- Volume {m3}
+  autocalculate;           !- Floor Area {m2}
+
+BuildingSurface:Detailed,
+  FLOOR,                   !- Name
+  Floor,                   !- Surface Type
+  Generic Wall,            !- Construction Name
+  ZONE ONE,                !- Zone Name
+  ,                        !- Space Name
+  Ground,                  !- Outside Boundary Condition
+  ,                        !- Outside Boundary Condition Object
+  NoSun,                   !- Sun Exposure
+  NoWind,                  !- Wind Exposure
+  ,                        !- View Factor to Ground
+  4,                       !- Number of Vertices
+  0, 0, 0,                 !- X,Y,Z Vertex 1 {m}
+  0, 4, 0,                 !- X,Y,Z Vertex 2 {m}
+  6, 4, 0,                 !- X,Y,Z Vertex 3 {m}
+  6, 0, 0;                 !- X,Y,Z Vertex 4 {m}
+
+BuildingSurface:Detailed,
+  WALL SOUTH,              !- Name
+  Wall,                    !- Surface Type
+  Generic Wall,            !- Construction Name
+  ZONE ONE,                !- Zone Name
+  ,                        !- Space Name
+  Outdoors,                !- Outside Boundary Condition
+  ,                        !- Outside Boundary Condition Object
+  SunExposed,              !- Sun Exposure
+  WindExposed,             !- Wind Exposure
+  ,                        !- View Factor to Ground
+  4,                       !- Number of Vertices
+  0, 0, 3,                 !- X,Y,Z Vertex 1 {m}
+  0, 0, 0,                 !- X,Y,Z Vertex 2 {m}
+  6, 0, 0,                 !- X,Y,Z Vertex 3 {m}
+  6, 0, 3;                 !- X,Y,Z Vertex 4 {m}
+
+FenestrationSurface:Detailed,
+  WINDOW SOUTH,            !- Name
+  Window,                  !- Surface Type
+  Generic Window,          !- Construction Name
+  WALL SOUTH,              !- Building Surface Name
+  ,                        !- Outside Boundary Condition Object
+  ,                        !- View Factor to Ground
+  ,                        !- Frame and Divider Name
+  1,                       !- Multiplier
+  4,                       !- Number of Vertices
+  1, 0, 2.5,               !- X,Y,Z Vertex 1 {m}
+  1, 0, 0.5,               !- X,Y,Z Vertex 2 {m}
+  5, 0, 0.5,               !- X,Y,Z Vertex 3 {m}
+  5, 0, 2.5;               !- X,Y,Z Vertex 4 {m}
+
+! Attached shading takes its zone from its base surface, so it resolves through the
+! zone-relative branch exactly like the wall it hangs off.
+Shading:Zone:Detailed,
+  OVERHANG SOUTH,          !- Name
+  WALL SOUTH,              !- Base Surface Name
+  ,                        !- Transmittance Schedule Name
+  4,                       !- Number of Vertices
+  1, -0.5, 3,              !- X,Y,Z Vertex 1 {m}
+  1, 0, 3,                 !- X,Y,Z Vertex 2 {m}
+  5, 0, 3,                 !- X,Y,Z Vertex 3 {m}
+  5, -0.5, 3;              !- X,Y,Z Vertex 4 {m}
+
+! Detached building shading has no zone: it gets the building rotation, but no zone
+! rotation, no origin translation, and no z offset.
+!     (x, y) -> (y, -x),  z unchanged
+Shading:Building:Detailed,
+  CARPORT,                 !- Name
+  ,                        !- Transmittance Schedule Name
+  4,                       !- Number of Vertices
+  0, 10, 4,                !- X,Y,Z Vertex 1 {m}
+  0, 12, 4,                !- X,Y,Z Vertex 2 {m}
+  3, 12, 4,                !- X,Y,Z Vertex 3 {m}
+  3, 10, 4;                !- X,Y,Z Vertex 4 {m}
+
+! Detached site shading is never transformed, in either coordinate system.
+Shading:Site:Detailed,
+  NEIGHBOUR,               !- Name
+  ,                        !- Transmittance Schedule Name
+  4,                       !- Number of Vertices
+  30, 30, 0,               !- X,Y,Z Vertex 1 {m}
+  30, 32, 0,               !- X,Y,Z Vertex 2 {m}
+  33, 32, 0,               !- X,Y,Z Vertex 3 {m}
+  33, 30, 0;               !- X,Y,Z Vertex 4 {m}

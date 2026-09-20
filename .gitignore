@@ -1,0 +1,14 @@
+node_modules/
+dist/
+.DS_Store
+*.local
+.vite/
+
+# Preprocessed IDD output — regenerate with `npm run preprocess-idd`
+src/parser/idd-table.generated.ts
+
+# Raw EnergyPlus IDD files and example corpus — large, fetched not committed.
+# Regenerate with ./scripts/fetch-idd.sh and ./scripts/fetch-fixtures.sh
+idd-cache/
+test/fixtures/testfiles/
+test/fixtures/versions/
