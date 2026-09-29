@@ -1,0 +1,62 @@
+name: Deploy to GitHub Pages
+
+# Builds the editor and publishes it at https://<owner>.github.io/<repo>/.
+# The app is entirely client-side: files are opened locally in the browser and never uploaded.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # The IDD field table is generated from EnergyPlus's IDD files, which are fetched rather than
+      # committed. Cached, since they only change when the list of versions does.
+      - uses: actions/cache@v4
+        with:
+          path: idd-cache
+          key: idd-${{ hashFiles('scripts/fetch-idd.sh') }}
+      - run: npm run fetch-idd
+      - run: npm run preprocess-idd
+
+      # The fixture corpus and EnergyPlus are not available here; those tests skip themselves.
+      - run: npx tsc --noEmit
+      - run: npx vitest run
+
+      - run: npx vite build
+        env:
+          CARTES_BASE: /${{ github.event.repository.name }}/
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: dist
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
