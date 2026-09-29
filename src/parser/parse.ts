@@ -106,8 +106,12 @@ function parseObject(text: string, start: number): ParsedObject {
         valueEnd = valueStart + trimmed.length
       }
     } else {
-      valueStart = segStart
-      valueEnd = segStart
+      // An empty field's insertion point is just before its own delimiter. Not `segStart`:
+      // after a comment line that is the end of the *previous* line, so filling in
+      // `    ,   !- Outside Boundary Condition Object` would write the value into the
+      // preceding field's comment, leaving this field blank.
+      valueStart = i
+      valueEnd = i
     }
     fields.push({ value: trimmed, valueStart, valueEnd })
     parts = []

@@ -52,6 +52,27 @@ BuildingSurface:Detailed,
     4, 0, 3;
 `
 
+  it('fills a blank field on its own line, not inside the previous field’s comment', () => {
+    // Regression: an empty field's span used to start at the end of the preceding comment, so
+    // the value was written into `!- Outside Boundary Condition` and the field stayed blank.
+    const doc = parseIdf(SOURCE)
+    const model = buildModel(doc)
+    const wall = [...doc.objects.values()].find((o) => o.className === 'BuildingSurface:Detailed')!
+    const obcObject = 5
+    expect(wall.fields[obcObject]!.value).toBe('')
+    setFieldValue(doc, model, wall.id, obcObject, 'WALL_2')
+
+    const emitted = emitIdf(doc)
+    const diff = computeLineDiff(SOURCE, emitted)
+    expect(diff.addedLines).toBe(1)
+    expect(diff.deletedLines).toBe(1)
+    expect(emitted).toContain('    Outdoors,                !- Outside Boundary Condition\n')
+    expect(emitted).toContain('    WALL_2,                        !- Outside Boundary Condition Object\n')
+    const reparsed = [...parseIdf(emitted).objects.values()].find((o) => o.className === 'BuildingSurface:Detailed')!
+    expect(reparsed.fields[obcObject]!.value).toBe('WALL_2')
+    expect(reparsed.fields[obcObject - 1]!.comment).toBe('- Outside Boundary Condition')
+  })
+
   it('updates a field, marks object dirty, and updates model', () => {
     const doc = parseIdf(SOURCE)
     const model = buildModel(doc)

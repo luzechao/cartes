@@ -23,6 +23,7 @@ import {
   type Model,
 } from '../model/index.js'
 import {
+  applyMatchProposals,
   applyZoneTranslation,
   DEFAULT_SNAP_SETTINGS,
   deleteVertex,
@@ -33,11 +34,13 @@ import {
   planDrag,
   planeOfSurface,
   planZoneTranslation,
+  proposeMatches,
   resolveModel,
   resolveSurface,
   transformContext,
   validateModel,
   type DragMode,
+  type MatchProposal,
   type ResolvedSurface,
   type SnapSettings,
   type TwinOutcome,
@@ -48,6 +51,7 @@ import { buildScene, Viewer, type ColorBy, type HoverInfo } from '../render/inde
 import { ObjectTree } from './ObjectTree.js'
 import { Inspector } from './Inspector.js'
 import { DiffPanel } from './DiffPanel.js'
+import { MatchPanel } from './MatchPanel.js'
 
 interface LoadedFile {
   name: string
@@ -123,7 +127,7 @@ interface BuildStats {
   skipped: number
 }
 
-type RightPanelTab = 'inspector' | 'validation'
+type RightPanelTab = 'inspector' | 'validation' | 'matching'
 type ValidationFilter = 'all' | 'error' | 'warning'
 
 export function App(): React.JSX.Element {
@@ -610,6 +614,26 @@ export function App(): React.JSX.Element {
     commit({ rebuild: true })
   }, [commit])
 
+  // Tens of milliseconds on the largest corpus file, so it simply follows every edit.
+  const matchReport = useMemo(
+    () => (loaded ? proposeMatches(loaded.doc, loaded.model, loaded.resolved) : undefined),
+    [loaded],
+  )
+
+  const applyMatches = useCallback(
+    (proposals: MatchProposal[]) => {
+      const current = loadedRef.current
+      if (!current || proposals.length === 0) return
+      const dirtied = applyMatchProposals(current.doc, current.model, proposals)
+      setNotice(
+        `Paired ${proposals.length} surface pair${proposals.length === 1 ? '' : 's'} — ` +
+          `${dirtied.length} object${dirtied.length === 1 ? '' : 's'} changed. Ctrl+Z undoes it.`,
+      )
+      commit({ rebuild: true })
+    },
+    [commit],
+  )
+
   const model = loaded?.model
   const validation = loaded?.validation
   const errorCount = validation?.errorCount ?? 0
@@ -687,6 +711,21 @@ export function App(): React.JSX.Element {
               title="Toggle Validation"
             >
               Validation ({validation?.issues.length ?? 0})
+            </button>
+
+            <button
+              type="button"
+              className={showRightPanel && rightTab === 'matching' ? 'button--active' : ''}
+              onClick={() => {
+                if (showRightPanel && rightTab === 'matching') setShowRightPanel(false)
+                else {
+                  setRightTab('matching')
+                  setShowRightPanel(true)
+                }
+              }}
+              title="Review proposed interzone surface pairs"
+            >
+              Matching ({matchReport?.proposals.length ?? 0})
             </button>
 
             <button
@@ -907,10 +946,29 @@ export function App(): React.JSX.Element {
               >
                 Validation ({validation?.issues.length ?? 0})
               </button>
+              <button
+                type="button"
+                className={`right-panel__tab${rightTab === 'matching' ? ' right-panel__tab--active' : ''}`}
+                onClick={() => setRightTab('matching')}
+              >
+                Matching ({matchReport?.proposals.length ?? 0})
+              </button>
             </div>
 
             <div className="right-panel__body">
-              {rightTab === 'inspector' ? (
+              {rightTab === 'matching' && matchReport ? (
+                <MatchPanel
+                  model={loaded.model}
+                  report={matchReport}
+                  selectedId={selectedId}
+                  onSelect={(id) => {
+                    setSelectedId(id)
+                    viewerRef.current?.select(id)
+                    viewerRef.current?.focus(id)
+                  }}
+                  onApply={applyMatches}
+                />
+              ) : rightTab === 'inspector' ? (
                 <Inspector
                   doc={loaded.doc}
                   model={loaded.model}

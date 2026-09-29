@@ -977,3 +977,81 @@ button:disabled {
   opacity: 0.45;
   cursor: default;
 }
+
+/* Phase 7 — surface matching review */
+.match-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  overflow-y: auto;
+  height: 100%;
+}
+
+.match-panel__summary {
+  font-size: 0.9em;
+}
+
+.match-panel__actions {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.match-panel__section > summary {
+  cursor: pointer;
+  font-weight: 600;
+  margin: 6px 0;
+}
+
+.match-panel__hint {
+  font-size: 0.85em;
+  opacity: 0.75;
+  margin: 0 0 6px;
+}
+
+.match-card--rejected {
+  opacity: 0.55;
+}
+
+.match-card__tick {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.match-card__more {
+  border: none;
+  background: none;
+  color: var(--accent);
+  cursor: pointer;
+  padding: 0;
+  font-size: 0.85em;
+}
+
+.match-card__changes {
+  width: 100%;
+  margin-top: 6px;
+  font-size: 0.8em;
+  border-collapse: collapse;
+}
+
+.match-card__changes td {
+  padding: 2px 4px;
+  vertical-align: top;
+}
+
+.match-card__from {
+  color: #b3261e;
+  text-decoration: line-through;
+}
+
+.match-card__to {
+  color: #1b7f3b;
+  font-weight: 600;
+}
+
+.issue-card--info {
+  border-left: 3px solid #9aa0a6;
+}

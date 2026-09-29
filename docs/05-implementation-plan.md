@@ -584,6 +584,10 @@ double-click on the ceiling's edge — through the plenum roof in front of it �
 
 ## Phase 7 — Surface auto-matching · M
 
+**Status: ✅ complete.** 614 tests green (581 from Phases 1–6, 33 new), `tsc --noEmit` and
+`vite build` clean. Gate met against the whole corpus and against EnergyPlus 26.1.0; the review
+panel exercised end to end in a browser.
+
 Plane bucketing → overlap detection → pair classification (full / partial / none), per
 `04-architecture.md` §Surface auto-matching.
 
@@ -593,6 +597,80 @@ fastest way to lose a user's trust.
 
 **Gate:** on a fixture with known-correct pairing, we reproduce it exactly. On a fixture with
 deliberately broken pairing, we propose the correct fix and propose nothing else.
+✅ **Met** — see below.
+
+### What was built
+
+| Piece | Notes |
+|---|---|
+| `src/geometry/match.ts` `findCoincidentPairs` | Base surfaces bucketed by quantized normal; each looks for partners in the buckets around its *reversed* normal, then plane gap, bounding boxes, and true polygon intersection in a shared 2D basis. Full = ≥ 99.9 % of both faces; partial otherwise. |
+| `src/geometry/match.ts` `proposeMatches` | Compares geometry with declared boundary conditions and sorts every coincident pair into *confirmed*, *unconfirmed* (declared, consistent, not coincident), *intentional* (deliberate boundary), *partial* (needs a split), *blocked* (could be repaired, not clearly right) and *proposals*. Three proposal kinds: `pair-exposed`, `complete-pair`, `repair-reference`. Windows and doors on paired walls are paired with them, or the pair is blocked. Changes nothing. |
+| `src/geometry/match.ts` `applyMatchProposals` | Writes accepted proposals through `setFieldValue`, as one undo step. |
+| `polygon-clipping` | New dependency (MIT). Concave floors and L-shaped walls are common in the corpus; a convex-only clipper would get their overlaps wrong. |
+| `src/ui/MatchPanel.tsx` | The review list: each proposal with a tick box, its reason, and its exact field changes (before → after); Apply *n of m*; rejections remembered by surface pair across re-runs; everything not proposed listed with its reason. The report re-runs after every edit (≤ 32 ms on the largest corpus file). |
+| `src/parser/parse.ts` | Fix: an empty field's span is now its own delimiter, not the end of the previous line (below). |
+| `test/geometry/match.test.ts` | Every rule on hand-sized geometry: opposed/same-facing/offset, partial fractions, a concave L, each proposal kind, the never-break-a-declared-pair rule, deliberate boundaries, ambiguity, same-zone, windows lined up and not, apply/undo/idempotence. |
+| `test/geometry/match-gate.test.ts` | The gate over the whole corpus. |
+| `test/geometry/eplus-match.test.ts` | The gate against EnergyPlus, with three kinds of breakage. |
+
+### Gate outcomes — measured
+
+**Known-correct pairing, over all 182 corpus files.** 1,535 declared pairs confirmed by geometry;
+49 declared pairs that do not coincide, left alone; 89 coincident faces with a deliberate
+`Adiabatic` boundary, left alone; 0 partial overlaps flagged; and **proposals on exactly one
+file** — the Phase 4 triaged defect in `ASHRAE901_OfficeLarge_STD2019_Denver_Chiller205_Detailed.idf`,
+where the matcher proposes precisely the two repointings that fix it (`Core_top_ZN_5_Wall_South`
+names `Core_bot_…` on the storey below while its coincident twin names it back). Applying them
+takes our validator's four `boundary-asymmetric` errors to zero, and a second run proposes
+nothing. EnergyPlus cannot arbitrate this one: the file needs an external ASHRAE 205 `.cbor`.
+
+**Deliberately broken pairing, over the corpus.** In every file, *every* confirmed pair was
+stripped — both sides reset to `Outdoors`, exposure on, windows unlinked — and the file reopened
+from text: **1,535 pairs in 123 files, every one proposed back, nothing else proposed** (bar the
+triaged defect), and after accepting everything **every pairing field equals the file as shipped**.
+Treating `Adiabatic` as exposed fails both the unit test and the corpus gate.
+
+**Against EnergyPlus**, on the five paired gate fixtures, three kinds of breakage each:
+
+| Break | E+ on the broken file | Matcher | E+ on the repaired file |
+|---|---|---|---|
+| one-sided (one side reset to `Outdoors`) | 5/5 refuse: `Potential "OtherZoneSurface" is not matched correctly` | exactly 1 proposal | 5/5 as shipped: 0 new severes, warnings identical as text |
+| dangling (twin name that does not exist) | 5/5 refuse: `references an outside boundary surface that cannot be found` | exactly 1 proposal | 5/5 as shipped |
+| stripped (every pair reset on both sides) | **4/5 run without complaint**; only air-boundary constructions give it away | exactly one per pair (3, 13, 13, 3, 1) | 5/5 as shipped |
+
+**In a browser**, on `5ZoneAirCooled.idf` with three pairs stripped and one made one-sided: the
+panel listed exactly those four, correctly classified; unticking one and applying the rest paired
+three (5 objects), validation went to zero, the rejected pair stayed listed; Ctrl+Z restored all
+four with the rejection remembered.
+
+### Discovered en route
+
+- **Geometry cannot overrule a declared pair.** 51 of 1,354 declared pairs in the corpus are not
+  coincident: `ChangeoverBypassVAV.idf` pairs walls 6.1 m apart, the large-office reference
+  buildings pair basement ceilings 0.2 m below the floors above at 99.07 % overlap, `Plenum.idf`
+  draws zones at their inside faces 36 mm apart. EnergyPlus runs them all, because it pairs by
+  name and area. So a consistent declared pair is never proposed for change; it is confirmed or
+  reported, nothing more. This rule, not the geometry, is what makes "propose nothing else" hold.
+- **EnergyPlus cannot see the error auto-matching exists for.** Turning every internal partition
+  into an outdoor wall produces a file EnergyPlus runs without a single new warning — the
+  building simply loses heat through its interior walls. It notices one-sided and dangling
+  pairs, which the validator already catches too; the silent case is only visible geometrically.
+- **"Partial overlap" is mostly noise unless both sides are open.** Unfiltered, the corpus has
+  325 partial overlaps, almost all between `Adiabatic` faces in models that chose adiabatic
+  partitions deliberately. Flagging only overlaps where neither side is paired, self-referencing
+  or deliberately bounded brings that to zero on shipped files while still catching a user's
+  half-aligned exterior walls.
+- **A latent Phase 5 bug: filling a blank field wrote into the previous field's comment.** The
+  parser gave an empty field the span of its segment start, which after a comment line is the end
+  of the *previous* line. So setting `    ,   !- Outside Boundary Condition Object` produced
+  `!- Outside Boundary ConditionC4-1P` — the value became comment text and the field stayed
+  blank. Every inspector edit to a blank field in a shipped-format file was silently lost. The
+  Phase 5 gate edited a non-blank field and could not see it; the matcher's restore test, which
+  fills hundreds of blank fields and reads them back, found it immediately. An empty field's span
+  is now its own delimiter; a regression test fails on the old behaviour.
+- **A hidden browser tab stops `requestAnimationFrame`**, which stalls Playwright's actionability
+  checks — and would stall this viewer's render-on-demand loop. Not a bug, but worth knowing when
+  a UI test "hangs".
 
 ---
 
@@ -699,15 +777,24 @@ outcomes.
     refresh, App edit modes) wired to `snapPoint`, verified in a browser. **Green: 581 tests.**
     **Phase 6 complete.**
 
-**Next — Phase 7 — Surface auto-matching.** Plane bucketing → overlap detection → pair
-classification, proposed as a reviewable list. It inherits a concrete first customer from
-Phase 6: the offset twins `planCornerMove` can only report.
+16. ✅ Surface auto-matching (`src/geometry/match.ts`) and its review panel
+    (`src/ui/MatchPanel.tsx`). Gate met over all 182 corpus files — 1,535 pairs stripped and
+    proposed back exactly, proposals on shipped files only for the triaged defect — and against
+    EnergyPlus on three kinds of breakage. Fixed a latent Phase 5 parser bug that lost every edit
+    to a blank field. **Green: 614 tests. Phase 7 complete.**
 
-One gap is recorded rather than closed: moving the *other* side of a geometrically offset
-interzone pair needs the twin's corresponding corner matched by proximity rather than by
-equality. That is precisely Phase 7's auto-matching problem, so `planCornerMove` reports the
-split (`CornerMovePlan.splitPairs`) and leaves the decision to the caller until Phase 7 can
-answer it properly.
+**Next — Phase 8 — Creation tools.** Draw surfaces and zones, extrude a footprint, place
+fenestration. The matcher becomes the natural finishing step: a new zone drawn against an
+existing one should be offered its interzone pairs rather than left exposed.
+
+Still recorded rather than closed:
+
+- **Offset twins in corner moves.** Moving the *other* side of a geometrically offset interzone
+  pair needs the twin's corresponding corner matched by proximity. Phase 7 deliberately does not
+  match offset faces (a 1 mm plane tolerance), so `planCornerMove` still reports the split
+  (`CornerMovePlan.splitPairs`) and leaves the decision to the caller.
+- **Partial overlaps are flagged, not split.** Splitting a face to match its neighbour is a
+  geometry-creating operation and belongs with Phase 8's tools.
 
 Carried-forward gaps, all low-risk and recorded rather than forgotten:
 
