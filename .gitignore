@@ -4,6 +4,11 @@ dist/
 *.local
 .vite/
 
+# EnergyPlus gate scratch space and local binary pointer (see test/harness/energyplus.ts).
+.eplus-tmp/
+.energyplus-path
+.pixi/
+
 # Preprocessed IDD output — regenerate with `npm run preprocess-idd`
 src/parser/idd-table.generated.ts
 

@@ -46,6 +46,8 @@ export interface SceneBuild {
   materials: MaterialCache
   /** Surfaces the model knows about that had no resolved geometry to draw. */
   skipped: string[]
+  /** The options the build was made with, so a partial refresh draws the same way. */
+  options: SceneOptions
 }
 
 /** Where in its family a surface sits, and which surface the family is anchored to. */
@@ -212,7 +214,47 @@ export function buildScene(
   }
 
   if (opts.colorBy !== 'type') applyColorBy(registry, materials, opts.colorBy)
-  return { root, registry, materials, skipped }
+  return { root, registry, materials, skipped, options: opts }
+}
+
+/**
+ * Redraw the geometry of some surfaces in place — the per-frame path of a drag.
+ *
+ * Rebuilding the whole scene on every pointer move would re-tessellate every surface in the
+ * file to move one corner. This swaps the mesh and outline buffers of the named surfaces only,
+ * leaving materials, selection and everything else untouched. Surfaces not in the build (or
+ * whose geometry has collapsed below two vertices) are returned so the caller can fall back to
+ * a full rebuild; a partial refresh is never allowed to silently drop a surface.
+ */
+export function refreshSurfaces(
+  build: SceneBuild,
+  model: Model,
+  resolved: ReadonlyMap<string, ResolvedSurface>,
+  ids: Iterable<string>,
+): string[] {
+  const plans = offsetPlans(model)
+  const unrefreshed: string[] = []
+  for (const id of ids) {
+    const entry = build.registry.get(id)
+    const geo = resolved.get(id)
+    if (!entry || !geo || geo.worldVertices.length < 2) {
+      unrefreshed.push(id)
+      continue
+    }
+    const plan = plans.get(id)
+    const offset = (plan?.depth ?? 0) * build.options.fenestrationOffset
+    const anchor = plan === undefined ? undefined : resolved.get(plan.rootId)?.normal
+    const direction = anchor !== undefined && !isZero(anchor) ? anchor : geo.normal
+
+    entry.mesh.geometry.dispose()
+    entry.mesh.geometry = surfaceGeometry(geo, offset, direction)
+    const edgeGeometry = new LineSegmentsGeometry()
+    edgeGeometry.setPositions(new Float32Array(surfaceEdgePositions(geo, offset, direction)))
+    const edges = entry.edges as LineSegments2
+    edges.geometry.dispose()
+    edges.geometry = edgeGeometry
+  }
+  return unrefreshed
 }
 
 /**

@@ -9,6 +9,7 @@
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
     "test": "vitest",
+    "test:eplus": "vitest run test/geometry/eplus-gate.test.ts test/geometry/eplus-refs.test.ts test/geometry/eplus-vertex-count.test.ts test/geometry/eplus-zone-translate.test.ts",
     "typecheck": "tsc --noEmit",
     "fetch-idd": "./scripts/fetch-idd.sh",
     "fetch-fixtures": "./scripts/fetch-fixtures.sh",

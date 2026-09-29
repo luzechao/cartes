@@ -253,6 +253,17 @@ function readVertices(obj: IdfObject, schema: ClassSchema, report: Reporter): Ve
   return out
 }
 
+/**
+ * Re-read a surface's vertex triples from its fields, exactly as `buildModel` does.
+ *
+ * For keeping the typed Model in step after an edit that the geometry write path did not make
+ * itself, such as reverting an object to its source text. Diagnostics are discarded; the next
+ * full model build reports them.
+ */
+export function readSurfaceVertices(obj: IdfObject, schema: ClassSchema): Vec3[] {
+  return readVertices(obj, schema, new Reporter())
+}
+
 function coord(
   obj: IdfObject,
   fieldIdx: number,

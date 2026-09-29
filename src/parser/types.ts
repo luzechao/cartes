@@ -45,6 +45,14 @@ export interface IdfObject {
   dirty: boolean
   /** True when the object ran to EOF without a terminating `;`. */
   unterminated?: boolean
+  /**
+   * Set once fields have been inserted into or removed from an extensible group (adding or
+   * deleting a vertex). Tells the emitter how the repeating group is laid out, so a
+   * re-rendered field can borrow its delimiter, line break and comment from the same slot of a
+   * neighbouring group, and so `Vertex N` comments can be renumbered to match their new
+   * position. Absent on every object whose field count has not been changed by a splice.
+   */
+  extensible?: { beginIndex: number; stride: number }
 }
 
 export interface IdfDiagnostic {
@@ -65,6 +73,15 @@ export interface IdfDocument {
   /** Value of the `Version` object's first field, if present. */
   version?: string
   diagnostics: IdfDiagnostic[]
+  /**
+   * Source spans of deleted objects, ascending and non-overlapping.
+   *
+   * Removing an id from `order` is not enough to delete an object: the emitter reproduces the
+   * text *between* objects verbatim, so a removed object's bytes would simply reappear as
+   * part of the preceding gap. Recording the span lets the emitter skip it. Empty for every
+   * document that has had nothing deleted, so the round-trip guarantee is untouched.
+   */
+  deletedSpans?: Array<{ start: number; end: number }>
 }
 
 export function getObject(doc: IdfDocument, id: string): IdfObject {

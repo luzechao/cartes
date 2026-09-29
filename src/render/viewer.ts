@@ -8,10 +8,15 @@
  */
 import {
   Box3,
+  BufferGeometry,
   Color,
   DirectionalLight,
   HemisphereLight,
+  Float32BufferAttribute,
   PerspectiveCamera,
+  Points,
+  PointsMaterial,
+  Quaternion,
   Raycaster,
   Scene,
   Sphere,
@@ -23,8 +28,45 @@ import {
 } from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import type { SceneBuild } from './scene.js'
-import { applyColorBy, type ColorBy } from './scene.js'
+import { applyColorBy, refreshSurfaces, type ColorBy } from './scene.js'
 import type { SceneEntry } from './registry.js'
+import type { Model, Vec3 } from '../model/index.js'
+import type { ResolvedSurface } from '../geometry/index.js'
+
+/** A ray in the model's own Z-up frame, ready for `geometry/drag.ts`. */
+export interface ModelRay {
+  origin: Vec3
+  direction: Vec3
+}
+
+export type MarkerKind = 'vertex' | 'edge' | 'grid'
+
+const HANDLE_COLOR = 0xff6d00
+const HANDLE_ACTIVE_COLOR = 0xd50000
+const MARKER_COLORS: Record<MarkerKind, number> = { vertex: 0xd500f9, edge: 0x00c853, grid: 0x2962ff }
+
+function pointsOf(color: number, size: number): Points {
+  const points = new Points(
+    new BufferGeometry(),
+    // Constant screen size, drawn over everything: a handle hidden behind the wall it belongs to
+    // is a handle nobody can grab.
+    new PointsMaterial({ color, size, sizeAttenuation: false, depthTest: false, transparent: true }),
+  )
+  points.renderOrder = 10
+  points.frustumCulled = false
+  points.raycast = () => {}
+  return points
+}
+
+function setPoints(points: Points, vs: readonly Vec3[]): void {
+  const flat: number[] = []
+  for (const v of vs) flat.push(v.x, v.y, v.z)
+  points.geometry.dispose()
+  const geometry = new BufferGeometry()
+  geometry.setAttribute('position', new Float32BufferAttribute(flat, 3))
+  points.geometry = geometry
+  points.visible = vs.length > 0
+}
 
 export interface HoverInfo {
   id: string
@@ -60,6 +102,13 @@ export class Viewer {
   private readonly observer: ResizeObserver | undefined
   private frame = 0
   private disposed = false
+
+  // Edit handles live under the build root, so they share its Z-up → Y-up rotation and are
+  // positioned in model coordinates like everything else.
+  private readonly handles = pointsOf(HANDLE_COLOR, 11)
+  private readonly activeHandle = pointsOf(HANDLE_ACTIVE_COLOR, 15)
+  private readonly marker = pointsOf(MARKER_COLORS.vertex, 17)
+  private handlePoints: Vec3[] = []
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -130,6 +179,7 @@ export class Viewer {
     this._selectedId = undefined
     this.build = build
     if (build) {
+      build.root.add(this.handles, this.activeHandle, this.marker)
       this.scene.add(build.root)
       const size = this.renderer.getDrawingBufferSize(new Vector2())
       build.materials.setResolution(size.x, size.y)
@@ -255,6 +305,107 @@ export class Viewer {
     return undefined
   }
 
+  // -------------------------------------------------------------------------
+  // Editing support — see geometry/drag.ts for what a drag actually does
+  // -------------------------------------------------------------------------
+
+  private ndc(clientX: number, clientY: number): boolean {
+    const rect = this.canvas.getBoundingClientRect()
+    if (rect.width === 0 || rect.height === 0) return false
+    this.pointer.set(
+      ((clientX - rect.left) / rect.width) * 2 - 1,
+      -((clientY - rect.top) / rect.height) * 2 + 1,
+    )
+    return true
+  }
+
+  /** The ray under the pointer, in model (Z-up) coordinates. */
+  rayAt(clientX: number, clientY: number): ModelRay | undefined {
+    const root = this.build?.root
+    if (!root || !this.ndc(clientX, clientY)) return undefined
+    this.raycaster.setFromCamera(this.pointer, this.camera)
+    root.updateMatrixWorld(true)
+    const origin = root.worldToLocal(this.raycaster.ray.origin.clone())
+    const inverse = root.getWorldQuaternion(new Quaternion()).invert()
+    const direction = this.raycaster.ray.direction.clone().applyQuaternion(inverse)
+    return {
+      origin: { x: origin.x, y: origin.y, z: origin.z },
+      direction: { x: direction.x, y: direction.y, z: direction.z },
+    }
+  }
+
+  /** A model point in client pixels, or undefined when it is behind the camera. */
+  toClient(p: Vec3): { x: number; y: number } | undefined {
+    const root = this.build?.root
+    if (!root) return undefined
+    root.updateMatrixWorld(true)
+    const v = root.localToWorld(new Vector3(p.x, p.y, p.z)).project(this.camera)
+    if (v.z > 1 || v.z < -1) return undefined
+    const rect = this.canvas.getBoundingClientRect()
+    return {
+      x: rect.left + ((v.x + 1) / 2) * rect.width,
+      y: rect.top + ((1 - v.y) / 2) * rect.height,
+    }
+  }
+
+  /** Show draggable vertex handles, optionally with one marked active. */
+  setHandles(points: readonly Vec3[], active?: number): void {
+    this.handlePoints = [...points]
+    setPoints(this.handles, points)
+    const a = active === undefined ? undefined : points[active]
+    setPoints(this.activeHandle, a ? [a] : [])
+    this.requestRender()
+  }
+
+  /** The handle within `radius` pixels of the pointer, nearest first. */
+  pickHandle(clientX: number, clientY: number, radius = 10): number | undefined {
+    let best: number | undefined
+    let bestDist = radius
+    this.handlePoints.forEach((p, i) => {
+      const c = this.toClient(p)
+      if (!c) return
+      const d = Math.hypot(c.x - clientX, c.y - clientY)
+      if (d <= bestDist) {
+        bestDist = d
+        best = i
+      }
+    })
+    return best
+  }
+
+  /** Show where a drag snapped to, coloured by what it snapped to. Undefined hides it. */
+  setMarker(point: Vec3 | undefined, kind: MarkerKind = 'vertex'): void {
+    ;(this.marker.material as PointsMaterial).color.setHex(MARKER_COLORS[kind])
+    setPoints(this.marker, point ? [point] : [])
+    this.requestRender()
+  }
+
+  /** Orbit and pan off while a handle is being dragged, so the drag does not also turn the camera. */
+  setNavigationEnabled(enabled: boolean): void {
+    this.controls.enabled = enabled
+  }
+
+  /**
+   * Redraw some surfaces' geometry in place. Returns the ids it could not redraw, for which the
+   * caller should rebuild the scene.
+   */
+  refresh(model: Model, resolved: ReadonlyMap<string, ResolvedSurface>, ids: Iterable<string>): string[] {
+    if (!this.build) return [...ids]
+    const missed = refreshSurfaces(this.build, model, resolved, ids)
+    this.requestRender()
+    return missed
+  }
+
+  /**
+   * Swap in a rebuilt scene without moving the camera — for edits that change which surfaces
+   * exist. `setBuild` alone would also be fine; this keeps the selection highlight.
+   */
+  replaceBuild(build: SceneBuild): void {
+    const selected = this._selectedId
+    this.setBuild(build)
+    if (selected && build.registry.get(selected)) this.select(selected)
+  }
+
   dispose(): void {
     this.disposed = true
     if (this.frame !== 0) cancelAnimationFrame(this.frame)
@@ -262,6 +413,10 @@ export class Viewer {
     this.controls.removeEventListener('change', this.requestRender)
     this.controls.dispose()
     this.setBuild(undefined)
+    for (const p of [this.handles, this.activeHandle, this.marker]) {
+      p.geometry.dispose()
+      ;(p.material as PointsMaterial).dispose()
+    }
     this.renderer.dispose()
   }
 }

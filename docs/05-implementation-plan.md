@@ -318,13 +318,21 @@ object, and that object's non-edited fields are textually unchanged.
 
 ## Phase 6 — Geometry editing · L
 
-- Vertex drag, constrained to the surface plane.
-- Surface translate along its normal, and in-plane.
-- Whole-zone translate.
-- Add / delete vertex.
-- Delete surface (with referential-integrity check against paired surfaces and child
-  fenestration).
-- Snapping: grid, vertex, edge.
+**Status: ✅ complete.** 581 tests green (406 from Phases 1–5, 175 new), `tsc --noEmit` clean,
+`vite build` clean. Every operation below is gated against EnergyPlus 26.1.0, and the gizmo was
+exercised end to end in a browser on `5ZoneAirCooled.idf`.
+
+- ✅ Vertex move, constrained to the surface plane by the caller supplying an in-plane target.
+- ✅ Surface translate (any world delta, so along-normal and in-plane are both callers' choices).
+- ✅ Coherent corner move — `planCornerMove` / `moveVertices`, the operation snapping exists for.
+- ✅ Snapping: grid, vertex, edge — with a plane constraint, over a uniform hash grid.
+- ✅ Delete surface, with referential integrity against paired twins and child fenestration.
+- ✅ Whole-zone translate — origin arithmetic where the file is Relative, per-vertex where it is
+  World, daylighting reference points and illuminance maps carried along.
+- ✅ Add / delete vertex — spliced into the file in its own formatting, mirrored onto the twin.
+- ✅ Undo / redo over Document-layer changes, one step per operation or per drag gesture.
+- ✅ Viewport gizmo — vertex and corner drags with live snapping, double-click to split an edge,
+  Delete for vertex or surface, Ctrl+Z / Ctrl+Shift+Z.
 
 Every edit writes field-level changes to the Document and marks affected geometry dirty.
 Undo operates on Document-layer field changes.
@@ -336,6 +344,241 @@ leave a dangling `Outside Boundary Condition Object`.
 **Gate:** move a vertex → validation still passes → EnergyPlus runs the output file without
 new severe errors. This requires actually running E+ against edited fixtures; set that up as
 a test harness, not a manual step.
+✅ **Met** — for every operation, not just the vertex move. See below.
+
+### What was built
+
+| Piece | Notes |
+|---|---|
+| `src/geometry/unresolve.ts` | Exact algebraic inverse of `resolve.ts`. World → document coordinates through the same three branches, plus `vertexFieldSlot` (undoes the entry-direction and starting-corner permutation to find the fields behind a picked vertex) and `formatCoordinate`. |
+| `src/geometry/edit-geometry.ts` | `setVertexWorld`, `translateSurface`, and the corner-move primitives: `verticesAt`, `verticesOnVerticalEdge`, `edgeIsSubdivided`, `planCornerMove`, `moveVertices`. Funnels every geometry write through Phase 5's `setFieldValue`, so a vertex drag is the same kind of event as a construction-name edit and inherits the surgical-patch diff behaviour. `planCornerMove` is propose-then-apply, like deletion. |
+| `src/geometry/snap.ts` | Grid, vertex and edge snapping over a uniform hash grid, with a plane constraint so a snap cannot break planarity. Priority is vertex → edge → grid. Headless: no three.js, no pointer events. |
+| `src/model/refs.ts` | Reverse-reference index. `byName` is built from the IDD's `\object-list` metadata rather than a hardcoded class list, so it finds `Daylighting:Controls`, `AirflowNetwork` and `SurfaceProperty:*` references without being told they exist. `byText` is an advisory textual sweep covering the classes the IDD subset does not describe at all. Over-reports rather than under-reports, which is the safe direction before a delete. |
+| `src/model/delete.ts` | `planSurfaceDeletion` / `applySurfaceDeletion`. Propose-then-apply: the plan lists cascades, twin breaks, other references and undeclared mentions so the UI can show them first. Does **not** silently downgrade an orphaned twin to `Adiabatic`; that happens only when asked for by name. |
+| `src/parser/emit.ts`, `types.ts` | `IdfDocument.deletedSpans`. Removing an id from `order` is not enough — the emitter reproduces inter-object text verbatim, so a deleted object's bytes would reappear inside the preceding gap. Empty for every un-deleted document, so the round-trip guarantee is untouched. |
+| `test/harness/energyplus.ts` | E+ harness: binary resolution (`ENERGYPLUS_EXE` → repo-local pixi → gitignored `.energyplus-path` → `PATH` → skip), design-day-only runs, `.err` parsing, `severeDiff` and `warningDiff`. |
+| `test/harness/gate-fixtures.ts` | Shared gate setup: fixture list, the recorded exclusions and their reasons, severe classification, and `interzonePairs` (which measures each pair's geometric `gap`). |
+| `test/geometry/unresolve.test.ts` | The inverse-transform invariant over the corpus, with rotations injected, plus the permutation trap and the no-op-edit invariant. |
+| `test/geometry/snap.test.ts` | Snap priority, tolerance, the plane constraint, and a snap-back-onto-a-shared-corner test that ends byte-identical. |
+| `test/geometry/corner-move.test.ts` | The corner-move primitives on inline geometry small enough to check by hand: coincidence vs plan-view, subdivided edges, fenestration blocking, offset twins, and the same-starting-geometry rule in `moveVertices`. |
+| `test/model/delete.test.ts` | Cascade planning, twin identification, byte-level survival of every other object, the default-leaves-it-dangling behaviour, and the textual sweep. |
+| `test/geometry/eplus-gate.test.ts` | The Phase 6 gate, the coherent-corner-move gate, the negative control, and the recorded exclusions. |
+| `test/geometry/eplus-refs.test.ts` | The referential-integrity gate: every surface it touches is chosen *because* it is half of an interzone pair. Each claim carries its own control. |
+| `src/model/edit.ts` `spliceFields` | Inserts/removes whole fields in an extensible group and records the group layout on the object (`IdfObject.extensible`). The only write path that changes a field *count*. |
+| `src/parser/emit.ts` `tryRenderSpliced` | Re-renders a spliced object from its own text: prefix, each field's value, the verbatim text *after* each field, and the tail. New fields borrow the trailing text of the same slot one group away, so a three-per-line file stays three-per-line; `Vertex N` comments are renumbered; aligned comments keep their column. Guards the Phase 5 patcher against a silent failure (below). |
+| `src/geometry/edit-vertex-count.ts` | `insertVertexWorld` / `deleteVertex`. Resolved-order → file-order insertion position through the entry-direction and starting-corner permutation; `Number of Vertices` kept in step only where it holds a literal; class caps and the three-vertex floor refused without change; the interzone twin mirrored by coincidence, or the reason it was not. |
+| `src/geometry/zone-translate.ts` | `planZoneTranslation` / `applyZoneTranslation`. Moves the `Zone` origin when anything in the zone rides on it, and rewrites explicitly whatever does not, per `GlobalGeometryRules` fields 3–5. Reports pairs the move pulls apart and World-positioned rectangular surfaces it cannot yet carry. |
+| `scripts/preprocess-idd.ts` | Adds `Daylighting:ReferencePoint` and `Output:IlluminanceMap` to the IDD subset, so zone translate reads them by name — across the 9.6 rename of `Zone Name` to `Zone or Space Name`. Regenerate with `npm run preprocess-idd`. |
+| `src/model/history.ts` | `EditHistory`: a transaction log at the Document layer. Captures each touched object's pre-state on first write and its post-state on commit; transactions nest by joining; `begin`/`end` bracket a gesture. Every public edit operation opens one, so each is exactly one undo step. |
+| `src/geometry/drag.ts` | The headless half of the gizmo. `planDrag` decides what moves (vertex mode: the vertex plus coincident vertices on *coplanar* surfaces; corner mode: `planCornerMove`), `DragSession` applies absolute-from-start updates through `snapPoint` on a constraint plane, `intersectRayPlane` and `nearestEdge` turn pointers into geometry. |
+| `src/render/scene.ts` `refreshSurfaces`, `src/render/viewer.ts` | Per-frame partial redraw of just the surfaces a drag touches; model-space rays; handles drawn over occluders and picked in screen space; a snap marker coloured by snap kind. |
+| `src/ui/App.tsx` | Select / Vertex / Corner modes, snap toggles and grid size, Move zone…, Delete (with a confirmation listing cascade, twins and dangling references, and an explicit choice for the twin), Undo / Redo. Inspector edits now rebuild the Model, so a typed vertex coordinate or zone origin shows up in the viewport. |
+| `test/geometry/vertex-count.test.ts` | Exact expected text for insert and delete in both vertex styles, permuted vertex orders, relative frames, caps, twins — and split-then-rejoin over every corpus surface. |
+| `test/geometry/eplus-vertex-count.test.ts`, `eplus-zone-translate.test.ts` | The EnergyPlus gates for the two new operations, each with its control. |
+| `test/geometry/zone-translate.test.ts`, `test/model/history.test.ts`, `test/geometry/drag.test.ts` | Rotations everywhere a rotation applies; undo retraced across long mixed sequences over the corpus; drag semantics headless. |
+
+### Gate outcomes — measured
+
+**The inverse-transform invariant.** `unresolve(resolve(v)) === v` over **34,650 vertices in
+182 files**: worst error **1.42e-14 m**. Re-run with a 37° north axis, a 23° Appendix G
+rotation and five distinct per-zone rotations injected — angles whose sines and cosines are
+all nonzero and distinct, because the corpus's own are not: worst error **5.68e-14 m**. That
+second pass is what makes a transposed sine or a misordered rotation detectable at all.
+
+**The EnergyPlus gate.** 7 fixtures, baseline and edited runs each, ~6 s total.
+- **Zero new severe errors on every fixture.** Each run moves a vertex 50 mm in-plane and
+  diffs the severe set against the unedited baseline. All 7 baselines are themselves clean
+  (0 severe), and all 7 edited runs complete successfully.
+- **Exactly one object dirty per edit,** carrying the Phase 5 invariant into geometry.
+- **Negative control passes:** pointing a surface's construction at a non-existent name does
+  produce new severes, so a clean result on the real gate means something.
+- **Version skew is a non-issue.** Fixtures come from `develop` and declare 26.2; the binary
+  is 26.1.0. That produces two benign `Version: in IDF="26.2" not the same as expected` 
+  warnings and nothing else, and diffing baseline against edited cancels them entirely.
+
+**The coherent-corner gate — the measured case for snapping.** Moving a *single* vertex adds
+exactly one warning on every fixture: `CalculateZoneVolume: N zone is not fully enclosed`.
+Moving *every vertex coincident with that corner* by the same delta — the operation a snapped
+drag performs — adds **nothing at all**:
+
+| Fixture | Vertices in corner | Warnings, baseline → corner move |
+|---|---|---|
+| `1ZoneUncontrolled.idf` | 6 | 2 → 2 |
+| `1ZoneUncontrolled_DD2009.idf` | 6 | 2 → 2 |
+| `Plenum.idf` | 6 | 3 → 3 |
+| `5ZoneAirCooled.idf` | 21 | 2 → 2 |
+| `5ZoneAirCooled_AirBoundaries.idf` | 21 | 3 → 3 |
+| `PurchAirWithDaylighting.idf` | 6 | 2 → 2 |
+| `PassiveTrombeWall.idf` | 12 | 3 → 3 |
+
+Seven for seven, zero new severes and zero new warnings. That is the difference snapping
+makes, measured by EnergyPlus rather than asserted. Warnings are compared as *text*, not as a
+count, so one warning being traded for another cannot pass.
+
+**The referential-integrity gate.** Every surface touched here is one half of an interzone
+pair, and every claim carries its own control — "EnergyPlus was happy" proves nothing unless
+the same harness can be shown to make it unhappy on the case the code exists to prevent.
+
+| Claim | Control | Result |
+|---|---|---|
+| A coherent corner move keeps both sides of a pair in step | Move one side and leave the twin — does E+ notice? | 5/5 fixtures: E+ warns `CalculateZoneVolume: ... is not fully enclosed` |
+| A reported `splitPairs` is a real divergence | Apply it anyway and ask E+ | At 1 m: `InterZone Surface Areas do not match as expected`. At 50 mm and 250 mm: nothing |
+| We catch a bad drag before E+ does | Drag a shared corner vertically; compare our issues to E+'s | 5/5: we name **the same surfaces** E+ names, with 3, 6, 6, 2 and 2 non-planar surfaces respectively |
+| Deletion leaves the twin dangling *and says so* | Run the result | 5/5: we report `boundary-missing-object`; E+ reports `references an outside boundary surface that cannot be found` and **refuses to run** |
+| `{ twins: 'adiabatic' }` produces a runnable file | — | 5/5 complete; the only new severes are ones the plan predicted |
+
+The structural half runs without a simulation, exhaustively over every plan-view corner of
+every paired fixture: **33 coherent corners; 102 pair/corner incidences moved both sides, 8
+splits reported, none silent.**
+
+**Add / delete vertex — text.** Over **every surface in all 182 corpus files**: split edge 0 at
+its midpoint, check the rendered object, delete the new vertex, demand the original bytes back.
+**7,222 surfaces split and rejoined byte-identically**, all rendered by splicing (the object's
+head is the file's own text, never regenerated), all 7,222 with their `Vertex N` comments
+correctly renumbered; each whole file emits byte-identical afterwards. The other **1,444**
+surfaces are four-vertex windows and were refused at the IDD's cap — exactly the fenestration
+count. Disabling renumbering fails 7 tests.
+
+**Add / delete vertex — EnergyPlus** (`eplus-vertex-count.test.ts`, 17 tests):
+
+| Claim | Control | Result |
+|---|---|---|
+| A bare edge split is harmless | Is anything new beyond E+'s own collinear clean-up? | 7/7: the *only* new warnings are `coincident/collinear vertices ... deleted` and its `CheckConvexity` companions; no severe |
+| A pulled vertex mirrored onto the twin runs | Same edit, twin left alone | 5/5 mirrored: completes, 0 new severes, only `CalculateZoneVolume` enclosure warnings (the pulled edge is shared with a neighbour). 5/5 unmirrored: E+ **refuses to run** — `Vertex size mismatch between base surface ... and outside boundary surface` — naming **the same two surfaces** our validator flags as `paired-vertex-count-mismatch` |
+| A deleted vertex mirrored onto the twin runs | Same edit, twin left alone | 5/5 vs 5/5, as above |
+
+**Whole-zone translate — EnergyPlus** (`eplus-zone-translate.test.ts`). Every zone of every
+fixture — **25 zones** — moved by (3, −2, 0.5) m: **0 new severes, 0 new warnings (compared as
+text), 0 new validation errors**, every run completes. In the two Relative fixtures each zone is
+**one field-level edit to one object** — the `Zone` line. Control: in
+`PurchAirWithDaylighting.idf`, moving `West Zone` but leaving its daylighting objects behind
+makes E+ warn `GetInputIlluminanceMap: Reference Map point ... outside Zone Min/Max`. With them
+carried, nothing. Headless, all four surface/daylighting system combinations under a 30° north
+axis, 20° zone rotation and 17° Appendix G move every point by exactly the delta (1e-9 m);
+transposing the origin's inverse rotation fails 4 tests.
+
+**Undo.** Over the corpus: **900 mixed steps across 116 files** (moves, insertions, vertex
+deletions, zone translates, surface deletions with twin repair), each asserted to record exactly
+one step iff it changed the file; then undone all the way back with **every intermediate text
+matched byte-for-byte**, no object left dirty, and redone all the way forward, likewise.
+Dropping the capture in `spliceFields` fails 2 tests; sharing rather than copying restored
+containers fails a redo-then-continue test written to catch exactly that.
+
+**The gizmo, in a browser** (`5ZoneAirCooled.idf`): a vertex drag on the interior ceiling
+`C1-1` moved 6 objects as one undo step (the ceiling, its twin, and the coplanar ceilings and
+plenum floors sharing the corner), with the camera held still; Ctrl+Z restored every value; a
+double-click on the ceiling's edge — through the plenum roof in front of it — added a vertex to
+`C1-1` *and* `C1-1P` ("Also applied to interzone twin"), validation clean; a corner drag moved
+15 objects in both zones as one step, validation clean.
+
+### Discovered en route
+
+- **A named twin is not necessarily a coincident one.** `Plenum.idf` draws each zone at its
+  inside face and leaves the partition thickness between them: `Zn001:Wall004` sits at
+  x = 30.700 and its twin `Zn002:Wall004` at x = 30.730, a **36 mm** gap. EnergyPlus accepts
+  this because it matches interzone surfaces by *name and area*, not by coordinates. So the
+  tempting assumption — that plan-view coincidence automatically gathers both sides of a pair
+  — is false, and `planCornerMove` reports the split in `splitPairs`. Four of Plenum's ten
+  pairs are offset this way; every pair in every other gate fixture is exact.
+- **… but reporting it is not the same as refusing it, and refusing was wrong.** The first
+  implementation made `splitPairs` block the move. Measurement killed it twice: it left
+  `Plenum.idf` with **zero** movable corners, and forcing the move anyway produced *no*
+  complaint from EnergyPlus at 50 mm or 250 mm. The divergence only crosses E+'s interzone
+  tolerance around **1 m**. Blocking a drag the simulation is content with would have been a
+  rule of our own invention, dressed up as safety. It reports; the caller decides.
+- **Three-dimensional vertex coincidence is not a sufficient basis for a drag either.** Taking
+  every vertex coincident with a wall-top corner and moving the set *vertically* keeps the
+  walls consistent with each other and with their twins — and still breaks the file, because
+  the flat roof and floor corners in that same set leave their own planes. This is why
+  `planCornerMove` is a plan-view operation and its name says so. The gate turns the failure
+  into a positive result: our validator names **the same surfaces** E+ does, before the file is
+  ever run.
+- **The reverse-reference index was blind to most of the file.** `buildReferenceIndex` skipped
+  any object whose class was absent from the geometry-focused IDD subset the model layer
+  loads. `Meter:Custom` is one of those, and it names surfaces in its `Key Name` fields — a
+  field with no `\object-list`, because the legal key names depend on which output variables
+  exist at runtime. Deleting `C1-1P` from `5ZoneAirCooled_AirBoundaries.idf` therefore
+  reported a clean plan and then raised two severe errors in the simulation. Two independent
+  causes, one symptom, found only by asserting that *every* severe after a deletion must have
+  been predicted. The fix is an advisory textual sweep (`ReferenceIndex.byText`) kept strictly
+  apart from the declared index, reported and never acted on.
+- **A single-vertex move is not a geometry-preserving operation for the zone it belongs to.**
+  Every fixture gains `CalculateZoneVolume: N zone is not fully enclosed`. Moving one wall's
+  corner does not move the corner its neighbours share. This is the measured case for
+  snapping being a correctness feature rather than polish, and it is why snapping was built
+  before the drag gizmo rather than after.
+- **Collinear walls split an edge that the floor spans whole.** In
+  `PurchAirWithDaylighting.idf` a zone's south face is two collinear walls meeting at an
+  intermediate point, while the floor and roof cross the entire run as a *single* edge.
+  Moving the far corner bends that edge, and the intermediate vertex — which belongs to the
+  two walls but not to the floor — stops lying on it. EnergyPlus names the exact unmatched
+  edges when asked with `Output:Diagnostics,DisplayExtraWarnings`. So vertex coincidence is
+  *not* a sufficient condition for a coherent corner move: the incident edges must also be
+  unsubdivided. The gate checks this; handling the general case is Phase 7's job.
+- **Not every severe an edit triggers is about geometry.** A 50 mm change flips
+  `PassiveTrombeWall.idf` — heavy mass, no mechanical conditioning, close to its tolerance —
+  into `CheckWarmupConvergence: ... did not converge after 25 warmup days`. EnergyPlus still
+  completes. The harness classifies this explicitly, reports it in the test output, and does
+  not fail on it; every other severe fails the gate.
+- **Writing a vertex must compare numerically, not textually.** Files spell zero as `0.0`;
+  our formatter emits `0`. A first implementation rewrote all three components on every move,
+  so dragging a vertex in Z alone produced a three-line diff and dirtied fields whose value
+  had not changed. Comparing `Number(field)` to the new value before writing keeps the diff to
+  the components that genuinely moved.
+- **Float noise needs bounding at the write boundary, not the read boundary.** Moving a vertex
+  and moving it back yields `4.999999999999999`. `toPrecision(12)` before formatting discards
+  the noise while leaving twelve significant digits — far more than any building geometry
+  carries. Values below 1 nm snap to `0`, because `Math.cos(Math.PI / 2)` is 6.1e-17 and
+  writing that into a file is noise, not geometry. Both are deliberate, bounded, documented.
+- **Deleting an object is not the same as forgetting it.** The emitter reproduces the text
+  *between* objects verbatim, so removing an id from `order` makes the deleted object's bytes
+  reappear as part of the preceding gap. `deletedSpans` records what to skip. The span is
+  widened to swallow the trailing newline, so a delete does not leave a blank hole.
+- **Tier-3-only files have nothing to edit.** `4ZoneWithShading_Simple_1.idf` runs perfectly
+  but is built entirely from `Wall:Exterior`, `Window` and `Shading:Site` — rectangular
+  classes defined by azimuth, tilt, length and height, with no vertices at all. It is excluded
+  from the gate with a test that asserts *why*, so the exclusion cannot quietly become wrong
+  once tier-3 support lands.
+- **The Phase 5 patcher would have silently lost a deletion.** `tryPatchOriginalSlice` checks
+  each field's value against its own source span. Remove a vertex and every *surviving* field
+  still matches its span, so the patcher returns the original slice — removed values and all —
+  and reports success. Its doc comment claimed a field-count check it did not perform. A spliced
+  object now never reaches the patcher unless its shape is provably the original one.
+- **EnergyPlus deletes collinear vertices on input.** A split edge left straight is invisible to
+  the simulation: it warns `There are N coincident/collinear vertices; These have been deleted`
+  and carries on. Even an *unmirrored* collinear split on an interzone surface runs, because the
+  extra vertex is gone before the pair is compared. The vertex only matters once it leaves the
+  edge — and then an unmirrored twin is fatal. So the gate measures the pulled case, and the
+  bare split's assertion is that nothing *but* the clean-up message appears.
+- **A split-and-pull on a zone boundary cannot keep the zone closed, by geometry rather than by
+  code.** Every edge of a closed zone is shared by two non-coplanar surfaces, and the only
+  direction lying in both planes is along the edge — i.e. collinear. So the enclosure warning on
+  the pulled case is the truth about the edit, and the gate accepts exactly that warning and no
+  other. Reshaping a footprint properly (splitting the wall above a split floor edge) is Phase 8.
+- **A zone's contents live in three coordinate systems, not one.** `GlobalGeometryRules` fields
+  3, 4 and 5 separately govern surfaces, daylighting points and rectangular surfaces, and a file
+  may mix them. A translate that moves only the origin is wrong for World surfaces; one that
+  rewrites only vertices strands Relative daylighting. The plan decides per category, and the
+  daylighting control shows E+ notices when it gets that wrong.
+- **EnergyPlus does not care where a zone is.** Pulling a zone 3.6 m away from every neighbour
+  it shares an interzone pair with produced no warning at all across 25 zones: it matches pairs
+  by name and area. That is why `splitPairs` is reported to the user rather than enforced, and
+  why the simulation cannot be the only judge of a geometry edit.
+- **Undo belongs at the Document layer, and not in a snapshot store.** `zundo` snapshots store
+  state; the Document is mutated in place, so a snapshot of it either copies every object per
+  drag frame or captures references that are mutated afterwards. Capturing the pre-state of only
+  the objects a transaction touches keeps a drag's undo entry to the surfaces it moved, whatever
+  the file size. `zustand` and `zundo` remain dependencies, unused.
+- **Handles drawn over occluders need picking to match.** Handles are drawn with depth testing
+  off so a ceiling's corners stay grabbable under the plenum roof. The first browser run showed
+  the consequence: the double-click's own clicks re-selected the roof in front, and the vertex
+  landed on the roof. In edit mode a click within 12 px of the selected surface's outline now
+  keeps the selection.
+- **Four otherwise-attractive fixtures fail at baseline for environmental reasons,** not
+  defects: Kiva `Foundation` boundary conditions need a weather file that design-day-only runs
+  do not supply (`ZoneCoupledKivaBasement`, `AtticRoof_RadiantBarriers`),
+  `SurfacePropTest_SurfLWR` reads an external CSV we do not ship, and `_1Zone_Heavy_AdiabaticX2`
+  has no `Site:Location`. Recorded in the gate file rather than silently dropped.
 
 ---
 
@@ -430,10 +673,41 @@ outcomes.
    focusing, and interactive Validation Panel UI. Phase 4 gate met over 182 corpus files. **Green: 401 tests.**
 10. ✅ Implement Object Tree, Declarative IDD Property Inspector, in-place field patching emitter,
     live diff engine, and file export. Phase 5 gate met. **Green: 406 tests.**
+11. ✅ Implement the inverse coordinate transform (`src/geometry/unresolve.ts`), the vertex/surface
+    write path (`src/geometry/edit-geometry.ts`), and the EnergyPlus test harness
+    (`test/harness/energyplus.ts`). Phase 6 gate met for the vertex-move slice over 7 fixtures
+    against EnergyPlus 26.1.0. **Green: 424 tests.**
+12. ✅ Implement snapping (`src/geometry/snap.ts`), the IDD-derived reverse-reference index
+    (`src/model/refs.ts`), surface deletion with referential integrity (`src/model/delete.ts`),
+    and emitter support for deleted spans. Coherent-corner gate met on 7/7 fixtures with zero
+    new warnings. **Green: 449 tests.**
+13. ✅ Close both recorded gate weaknesses. Promote the corner move to product code
+    (`planCornerMove`, `moveVertices`, `verticesAt`, `verticesOnVerticalEdge`,
+    `edgeIsSubdivided`) so the gate tests the shipping path, and add a referential-integrity
+    gate (`test/geometry/eplus-refs.test.ts`) that edits and deletes surfaces chosen *because*
+    they are paired. Found and fixed two real defects en route: `planCornerMove` was blind to
+    geometrically offset twins, and `buildReferenceIndex` was skipping every class outside the
+    loaded IDD subset. **Green: 501 tests.**
 
-**Next — Phase 6 — Geometry editing.** Vertex drag constrained to surface plane, surface translate along
-normal and in-plane, whole-zone translate, add/delete vertex, delete surface with referential-integrity
-check, snapping. Gate: move a vertex → validation passes → EnergyPlus runs output file without new severe errors.
+14. ✅ Add / delete vertex (`src/geometry/edit-vertex-count.ts`) through a new field-splice write
+    path and a formatting-preserving spliced renderer in the emitter; whole-zone translate
+    (`src/geometry/zone-translate.ts`) across all three coordinate-system fields, with the
+    daylighting classes added to the IDD subset. Both gated against EnergyPlus with controls;
+    7,222 corpus surfaces split and rejoined byte-identically. **Green: 557 tests.**
+15. ✅ Undo / redo at the Document layer (`src/model/history.ts`), 900 corpus steps retraced
+    byte-exactly; the viewport gizmo (`src/geometry/drag.ts`, viewer handles and partial
+    refresh, App edit modes) wired to `snapPoint`, verified in a browser. **Green: 581 tests.**
+    **Phase 6 complete.**
+
+**Next — Phase 7 — Surface auto-matching.** Plane bucketing → overlap detection → pair
+classification, proposed as a reviewable list. It inherits a concrete first customer from
+Phase 6: the offset twins `planCornerMove` can only report.
+
+One gap is recorded rather than closed: moving the *other* side of a geometrically offset
+interzone pair needs the twin's corresponding corner matched by proximity rather than by
+equality. That is precisely Phase 7's auto-matching problem, so `planCornerMove` reports the
+split (`CornerMovePlan.splitPairs`) and leaves the decision to the caller until Phase 7 can
+answer it properly.
 
 Carried-forward gaps, all low-risk and recorded rather than forgotten:
 
@@ -446,5 +720,17 @@ Carried-forward gaps, all low-risk and recorded rather than forgotten:
   everywhere in the corpus. The path is covered by a hand-authored fixture and by the
   injected-rotation pass, which is enough to kill the mutations, but a concrete Appendix G
   baseline model would still be worth adding if one becomes available.
-- Tier-3 rectangular surfaces are counted, not rendered. `GlobalGeometryRules` field 4
-  (`Rectangular Surface Coordinate System`) is read and preserved but unused until they are.
+- Tier-3 rectangular surfaces are counted, not rendered. `GlobalGeometryRules` field 5
+  (`Rectangular Surface Coordinate System`) is used only by zone translate, which carries them
+  when Relative and lists them in `leftBehind` when World.
+  Measured consequence: `4ZoneWithShading_Simple_1.idf` is built entirely from these classes
+  and so contains no editable vertex at all.
+- **Gizmo gaps.** No on-screen handle for surface translate along its normal (the operation
+  exists; only the UI does not), zone translate takes typed offsets rather than a drag, and a
+  moved wall's windows stay put — corner mode refuses fenestrated walls for that reason, vertex
+  mode lets the validator report the containment break. Deletion and zone-move confirmations use
+  `window.confirm`; a proper review panel would suit Phase 7's proposal list too.
+- **The EnergyPlus gate needs a local binary and a local corpus.** `test/fixtures/` is
+  gitignored (fetched, not committed) and E+ is not a package dependency, so the gate
+  `describe.skipIf`s itself into silence on a machine without both. It is green locally
+  against EnergyPlus 26.1.0; wiring it into CI means solving fixture fetch plus an E+ install.

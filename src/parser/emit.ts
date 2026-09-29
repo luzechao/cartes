@@ -1,4 +1,5 @@
 import type { IdfDocument, IdfObject } from './types.js'
+import { parseIdf } from './parse.js'
 
 export interface EmitOptions {
   /** Spaces before each field on its own line. Only affects regenerated objects. */
@@ -62,9 +63,13 @@ function inferFormatting(raw: string): InferredFormatting {
 
 /**
  * Try to surgically patch modified field values directly into the original source slice.
- * If every field that changed has a valid [valueStart, valueEnd] span, and the field count
- * is unchanged, this replaces exactly the edited values in place, preserving 100% of all
- * other lines, vertex groupings, spaces, and comments.
+ * If every field that changed has a valid [valueStart, valueEnd] span, this replaces exactly the
+ * edited values in place, preserving 100% of all other lines, vertex groupings, spaces, and
+ * comments.
+ *
+ * It cannot see a *removed* field — every survivor still matches its own span — so it must only
+ * be used on objects whose shape is the parsed one. `renderObject` guarantees that for spliced
+ * objects; a field-count change by any other route adds span-less fields, which bail here.
  */
 function tryPatchOriginalSlice(
   obj: IdfObject,
@@ -104,6 +109,132 @@ function tryPatchOriginalSlice(
   return result
 }
 
+/** Spans of the object's fields as originally parsed, in absolute source offsets. */
+function originalFieldSpans(
+  obj: IdfObject,
+  source: string,
+): Array<{ valueStart: number; valueEnd: number }> | undefined {
+  if (obj.start === null || obj.end === null) return undefined
+  const reparsed = parseIdf(source.slice(obj.start, obj.end)).objects.values().next().value
+  if (!reparsed) return undefined
+  const spans: Array<{ valueStart: number; valueEnd: number }> = []
+  for (const f of reparsed.fields) {
+    if (f.valueStart === undefined || f.valueEnd === undefined) return undefined
+    spans.push({ valueStart: f.valueStart + obj.start, valueEnd: f.valueEnd + obj.start })
+  }
+  return spans
+}
+
+function sameShapeAsSource(obj: IdfObject, source: string): boolean {
+  const original = originalFieldSpans(obj, source)
+  return original !== undefined && hasOriginalShape(obj, original)
+}
+
+/** True when the object still holds exactly its parsed fields, in their parsed order. */
+function hasOriginalShape(
+  obj: IdfObject,
+  original: ReadonlyArray<{ valueStart: number }>,
+): boolean {
+  if (obj.fields.length !== original.length) return false
+  return obj.fields.every((f, i) => f.valueStart === original[i]!.valueStart)
+}
+
+/**
+ * Replace the group number in a borrowed or relocated comment.
+ *
+ * `!- X,Y,Z ==> Vertex 3 {m}` must not survive as `Vertex 3` once a vertex has been inserted
+ * before it. Only the exact number the comment was written with is touched, and only as a
+ * whole word, so a comment that happens to hold some other number is left alone.
+ */
+function renumberGap(gap: string, fromGroup: number | undefined, toGroup: number | undefined): string {
+  if (fromGroup === undefined || toGroup === undefined || fromGroup === toGroup) return gap
+  const bang = gap.indexOf('!')
+  if (bang === -1) return gap
+  const pattern = new RegExp(`\\b${fromGroup}\\b`)
+  return gap.slice(0, bang) + gap.slice(bang).replace(pattern, String(toGroup))
+}
+
+/**
+ * Keep a column-aligned `!-` comment in its column when the value before it changes width.
+ *
+ * Only for gaps whose author visibly aligned them — more than two spaces before the `!`.
+ * Three-per-line vertex rows (`0,0,3,  !- X,Y,Z ==> Vertex 1 {m}`) use a fixed two-space
+ * separator instead, and padding those out would invent an alignment the file never had.
+ */
+function realignGap(gap: string, widthWas: number, widthNow: number): string {
+  if (widthWas === widthNow) return gap
+  const m = /^([,;])( +)!/.exec(gap)
+  if (!m || m[2]!.length <= 2) return gap
+  const spaces = Math.max(2, m[2]!.length - (widthNow - widthWas))
+  return m[1]! + ' '.repeat(spaces) + gap.slice(1 + m[2]!.length)
+}
+
+/**
+ * Re-render an object whose field *count* has changed — a vertex inserted or deleted —
+ * without regenerating it from scratch.
+ *
+ * The original slice is decomposed into the class-name prefix, each field's value, the
+ * verbatim text *after* each field (delimiter, spacing, comment, line break, indentation), and
+ * the tail following the last field (`;` plus its comment). Surviving fields keep their own
+ * trailing text; a field that gained a successor borrows the trailing text of the same slot
+ * one group earlier (or later), which is what makes an inserted vertex land on its own line in
+ * a three-per-line file and on three lines in a one-per-line file. Group-numbered comments are
+ * renumbered to their new position.
+ *
+ * Returns undefined when the object cannot be decomposed this way, and the caller falls back
+ * to a full regeneration from structured fields.
+ */
+function tryRenderSpliced(obj: IdfObject, source: string): string | undefined {
+  const layout = obj.extensible
+  if (!layout || obj.start === null || obj.end === null || obj.fields.length === 0) return undefined
+  const original = originalFieldSpans(obj, source)
+  if (!original || original.length === 0) return undefined
+  if (hasOriginalShape(obj, original)) return undefined
+
+  const origIndexByStart = new Map<number, number>()
+  original.forEach((s, j) => origIndexByStart.set(s.valueStart, j))
+  const origOf = obj.fields.map((f) =>
+    f.valueStart === undefined ? undefined : origIndexByStart.get(f.valueStart),
+  )
+  if (origOf[0] !== 0) return undefined
+
+  const lastOrig = original.length - 1
+  const trailing = (j: number): string =>
+    source.slice(original[j]!.valueEnd, original[j + 1]!.valueStart)
+  const groupOf = (i: number): number | undefined =>
+    i < layout.beginIndex ? undefined : Math.floor((i - layout.beginIndex) / layout.stride) + 1
+
+  /** Trailing text for output field `i`, as (text, original index it was written for). */
+  const commaGap = (i: number): [string, number] | undefined => {
+    const own = origOf[i]
+    if (own !== undefined && own < lastOrig) return [trailing(own), own]
+    for (const step of [-layout.stride, layout.stride]) {
+      for (let k = i + step; k >= 0 && k < obj.fields.length; k += step) {
+        const j = origOf[k]
+        if (j !== undefined && j < lastOrig) return [trailing(j), j]
+      }
+    }
+    return undefined
+  }
+
+  let out = source.slice(obj.start, original[0]!.valueStart)
+  const last = obj.fields.length - 1
+  const widthOf = (j: number): number => original[j]!.valueEnd - original[j]!.valueStart
+  for (let i = 0; i <= last; i++) {
+    const value = obj.fields[i]!.value
+    out += value
+    if (i === last) {
+      const tail = source.slice(original[lastOrig]!.valueEnd, obj.end)
+      out += realignGap(renumberGap(tail, groupOf(lastOrig), groupOf(i)), widthOf(lastOrig), value.length)
+    } else {
+      const gap = commaGap(i)
+      if (!gap) return undefined
+      out += realignGap(renumberGap(gap[0], groupOf(gap[1]), groupOf(i)), widthOf(gap[1]), value.length)
+    }
+  }
+  return out
+}
+
 /**
  * Render an object from its structured fields. Used only for objects that are dirty or
  * were created after parsing — unmodified objects are emitted from their source slice.
@@ -118,7 +249,13 @@ export function renderObject(
   source?: string,
 ): string {
   if (source) {
-    const patched = tryPatchOriginalSlice(obj, source)
+    const spliced = tryRenderSpliced(obj, source)
+    if (spliced !== undefined) return spliced
+    // A splice whose shape could not be decomposed must not reach the in-place patcher: with a
+    // field removed, every survivor still matches its own span, and the patcher would hand back
+    // the original slice with the removed values still in it.
+    const reshaped = obj.extensible !== undefined && !sameShapeAsSource(obj, source)
+    const patched = reshaped ? undefined : tryPatchOriginalSlice(obj, source)
     if (patched !== undefined) {
       return patched
     }
@@ -174,6 +311,28 @@ function rawIncludesSpaceAfterComma(source: string | undefined, start: number, e
 }
 
 /**
+ * Emit the untouched text between objects, minus any spans belonging to deleted objects.
+ *
+ * With nothing deleted this is a plain slice, which is what keeps the Phase 1 byte-identical
+ * round trip intact.
+ */
+function gapText(doc: IdfDocument, from: number, to: number): string {
+  const spans = doc.deletedSpans
+  if (!spans || spans.length === 0 || from >= to) return doc.source.slice(from, to)
+
+  let out = ''
+  let cursor = from
+  for (const span of [...spans].sort((a, b) => a.start - b.start)) {
+    if (span.end <= cursor || span.start >= to) continue
+    const skipFrom = Math.max(span.start, cursor)
+    if (skipFrom > cursor) out += doc.source.slice(cursor, skipFrom)
+    cursor = Math.min(span.end, to)
+  }
+  if (cursor < to) out += doc.source.slice(cursor, to)
+  return out
+}
+
+/**
  * Serialize a document back to IDF text.
  *
  * Byte-identical to the input when no object is dirty: unmodified objects are emitted as
@@ -192,7 +351,7 @@ export function emitIdf(doc: IdfDocument, options: EmitOptions = {}): string {
 
     if (hasSpan) {
       // Emit the gap between the previous object and this one, verbatim.
-      if (obj.start! > cursor) out.push(doc.source.slice(cursor, obj.start!))
+      if (obj.start! > cursor) out.push(gapText(doc, cursor, obj.start!))
       else if (obj.start! < cursor) {
         // Reordered relative to the source; the preceding gap has already been consumed.
       }
@@ -208,7 +367,7 @@ export function emitIdf(doc: IdfDocument, options: EmitOptions = {}): string {
   }
 
   // Trailing gap: comments or whitespace after the final object.
-  if (cursor < doc.source.length) out.push(doc.source.slice(cursor))
+  if (cursor < doc.source.length) out.push(gapText(doc, cursor, doc.source.length))
 
   return out.join('')
 }

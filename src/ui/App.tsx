@@ -11,17 +11,36 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { parseIdf, emitIdf, type IdfDocument } from '../parser/index.js'
 import {
+  applySurfaceDeletion,
   buildModel,
+  buildReferenceIndex,
+  EditHistory,
   setFieldValue,
   revertObject,
   revertAll,
   getDirtyObjects,
+  planSurfaceDeletion,
   type Model,
 } from '../model/index.js'
 import {
+  applyZoneTranslation,
+  DEFAULT_SNAP_SETTINGS,
+  deleteVertex,
+  DragSession,
+  insertVertexWorld,
+  intersectRayPlane,
+  nearestEdge,
+  planDrag,
+  planeOfSurface,
+  planZoneTranslation,
   resolveModel,
+  resolveSurface,
+  transformContext,
   validateModel,
+  type DragMode,
   type ResolvedSurface,
+  type SnapSettings,
+  type TwinOutcome,
   type ValidationIssue,
   type ValidationReport,
 } from '../geometry/index.js'
@@ -39,6 +58,63 @@ interface LoadedFile {
   originalSource: string
   /** Parse + model + resolve + validate, in milliseconds. */
   ms: number
+  /** Undo/redo over this document. See model/history.ts. */
+  history: EditHistory
+}
+
+type EditMode = 'off' | DragMode
+
+interface ActiveDrag {
+  session: DragSession
+  pointerId: number
+  handle: number
+  /** Geometry as of the latest drag frame, for redrawing handles. */
+  resolved: Map<string, ResolvedSurface>
+}
+
+/** Pixels within which a double-click counts as "on" an edge. */
+const EDGE_PICK_PX = 12
+
+function twinNotice(twin: TwinOutcome | undefined): string | undefined {
+  if (!twin) return undefined
+  return twin.mirrored
+    ? `Also applied to interzone twin ${twin.name}.`
+    : `Twin ${twin.name} was not changed: ${twin.reason ?? 'unknown reason'}. Validation will flag the pair.`
+}
+
+/**
+ * Screen distance from a pointer to a surface's outline, in pixels.
+ *
+ * Handles and the selection outline are drawn over whatever is in front of them, so in edit
+ * mode a click on them must count as a click on the selected surface — not on the wall that
+ * happens to be nearer the camera.
+ */
+function outlineDistancePx(
+  viewer: Viewer,
+  surface: ResolvedSurface,
+  clientX: number,
+  clientY: number,
+): number {
+  const pts = surface.worldVertices.map((v) => viewer.toClient(v))
+  let best = Infinity
+  for (let i = 0; i < pts.length; i++) {
+    const a = pts[i]
+    const b = pts[(i + 1) % pts.length]
+    if (!a || !b) continue
+    const dx = b.x - a.x
+    const dy = b.y - a.y
+    const len = dx * dx + dy * dy
+    const t = len === 0 ? 0 : Math.max(0, Math.min(1, ((clientX - a.x) * dx + (clientY - a.y) * dy) / len))
+    best = Math.min(best, Math.hypot(clientX - (a.x + dx * t), clientY - (a.y + dy * t)))
+  }
+  return best
+}
+
+function isTyping(target: EventTarget | null): boolean {
+  const el = target as HTMLElement | null
+  if (!el) return false
+  const tag = el.tagName
+  return tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable
 }
 
 interface BuildStats {
@@ -69,6 +145,26 @@ export function App(): React.JSX.Element {
 
   const [error, setError] = useState<string | undefined>(undefined)
   const [dragging, setDragging] = useState(false)
+
+  const [editMode, setEditMode] = useState<EditMode>('off')
+  const [snap, setSnap] = useState<SnapSettings>(DEFAULT_SNAP_SETTINGS)
+  const [activeHandle, setActiveHandle] = useState<number | undefined>(undefined)
+  const [notice, setNotice] = useState<string | undefined>(undefined)
+
+  // Pointer and keyboard handlers outlive a render; they read the current state through these.
+  const loadedRef = useRef<LoadedFile | undefined>(undefined)
+  const selectedRef = useRef<string | undefined>(undefined)
+  const editModeRef = useRef<EditMode>('off')
+  const activeHandleRef = useRef<number | undefined>(undefined)
+  const dragRef = useRef<ActiveDrag | undefined>(undefined)
+  const colorByRef = useRef<ColorBy>('type')
+  const snapRef = useRef<SnapSettings>(DEFAULT_SNAP_SETTINGS)
+  loadedRef.current = loaded
+  colorByRef.current = colorBy
+  snapRef.current = snap
+  selectedRef.current = selectedId
+  editModeRef.current = editMode
+  activeHandleRef.current = activeHandle
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -111,6 +207,7 @@ export function App(): React.JSX.Element {
       const model = buildModel(doc)
       const resolved = resolveModel(model)
       const validation = validateModel(model, resolved, doc)
+      loadedRef.current?.history.detach()
       setLoaded({
         name: file.name,
         doc,
@@ -119,7 +216,10 @@ export function App(): React.JSX.Element {
         validation,
         originalSource: text,
         ms: performance.now() - started,
+        history: new EditHistory(doc),
       })
+      setActiveHandle(undefined)
+      setNotice(undefined)
       setSelectedId(undefined)
       setShowRightPanel(true)
       setRightTab(validation.issues.length > 0 ? 'validation' : 'inspector')
@@ -139,27 +239,329 @@ export function App(): React.JSX.Element {
     [open],
   )
 
-  const onPointerDown = useCallback((event: React.PointerEvent) => {
-    pointerDownRef.current = { x: event.clientX, y: event.clientY }
-  }, [])
+  /**
+   * Re-derive everything downstream of the Document after an edit.
+   *
+   * `rebuild` replaces the Model and the scene outright — for anything that changes which
+   * objects exist, or that the in-place Model sync does not cover (undo and redo, deletion,
+   * inspector edits to zones or to GlobalGeometryRules). Otherwise only the named surfaces are
+   * redrawn, which is what keeps a drag or a vertex insertion cheap on a large file.
+   */
+  const commit = useCallback((opts: { rebuild?: boolean; refresh?: Iterable<string> } = {}) => {
+    const current = loadedRef.current
+    if (!current) return
+    const model = opts.rebuild ? buildModel(current.doc) : current.model
+    const resolved = resolveModel(model)
+    const validation = validateModel(model, resolved, current.doc)
+    const next: LoadedFile = { ...current, model, resolved, validation }
+    loadedRef.current = next
+    setLoaded(next)
 
-  const onPointerUp = useCallback((event: React.PointerEvent) => {
-    const down = pointerDownRef.current
-    if (!down) return
-    if (Math.hypot(event.clientX - down.x, event.clientY - down.y) < 4) {
-      const hit = viewerRef.current?.pick(event.clientX, event.clientY)
-      setSelectedId(hit?.id)
-      viewerRef.current?.select(hit?.id)
-      if (hit?.id) {
-        setRightTab('inspector')
-        setShowRightPanel(true)
-      }
+    const viewer = viewerRef.current
+    if (!viewer) return
+    let rebuild = opts.rebuild === true
+    if (!rebuild && opts.refresh) rebuild = viewer.refresh(model, resolved, opts.refresh).length > 0
+    if (rebuild) {
+      const build = buildScene(model, resolved, { colorBy: colorByRef.current })
+      viewer.replaceBuild(build)
+      setStats({ drawn: build.registry.size, skipped: build.skipped.length })
+    }
+    const selected = selectedRef.current
+    if (selected && !current.doc.objects.has(selected)) {
+      setSelectedId(undefined)
+      viewer.select(undefined)
+      setActiveHandle(undefined)
     }
   }, [])
 
-  const onPointerMove = useCallback((event: React.PointerEvent) => {
-    setHover(viewerRef.current?.pick(event.clientX, event.clientY))
+  const endDrag = useCallback(
+    (event?: React.PointerEvent) => {
+      const drag = dragRef.current
+      const current = loadedRef.current
+      if (!drag || !current) return
+      dragRef.current = undefined
+      current.history.end()
+      const viewer = viewerRef.current
+      viewer?.setNavigationEnabled(true)
+      viewer?.setMarker(undefined)
+      if (event && (event.target as Element).hasPointerCapture?.(drag.pointerId)) {
+        ;(event.target as Element).releasePointerCapture(drag.pointerId)
+      }
+      commit({ refresh: drag.session.surfaceIds })
+    },
+    [commit],
+  )
+
+  /**
+   * Grab a handle — in the capture phase, so it runs before OrbitControls' own listener on the
+   * canvas and can switch the camera off before the camera starts turning.
+   */
+  const onPointerDownCapture = useCallback((event: React.PointerEvent) => {
+    const current = loadedRef.current
+    const mode = editModeRef.current
+    const selected = selectedRef.current
+    const viewer = viewerRef.current
+    if (!current || !viewer || mode === 'off' || !selected || event.button !== 0) return
+
+    const handle = viewer.pickHandle(event.clientX, event.clientY)
+    if (handle === undefined) return
+    setActiveHandle(handle)
+
+    const start = planDrag(current.model, current.resolved, selected, handle, mode)
+    if (!start) return
+    if (start.refused) {
+      setNotice(`Cannot drag this corner: ${start.refused}.`)
+      return
+    }
+    const split = start.cornerPlan?.splitPairs ?? []
+    setNotice(
+      split.length > 0
+        ? `Moving one side only of ${split.map((p) => `${p.surfaceName} / ${p.twinName}`).join(', ')} — ` +
+            'those twins are drawn offset and cannot be matched by position.'
+        : undefined,
+    )
+
+    current.history.begin(mode === 'corner' ? 'Move corner' : 'Move vertex')
+    dragRef.current = {
+      session: new DragSession(current.doc, current.model, current.resolved, start, snapRef.current),
+      pointerId: event.pointerId,
+      handle,
+      resolved: new Map(current.resolved),
+    }
+    viewer.setNavigationEnabled(false)
+    ;(event.target as Element).setPointerCapture?.(event.pointerId)
   }, [])
+
+  const onPointerDown = useCallback((event: React.PointerEvent) => {
+    if (dragRef.current) return
+    pointerDownRef.current = { x: event.clientX, y: event.clientY }
+  }, [])
+
+  const onPointerUp = useCallback(
+    (event: React.PointerEvent) => {
+      if (dragRef.current) {
+        endDrag(event)
+        return
+      }
+      const down = pointerDownRef.current
+      if (!down) return
+      if (Math.hypot(event.clientX - down.x, event.clientY - down.y) < 4) {
+        const viewer = viewerRef.current
+        const selected = selectedRef.current
+        const outline = selected ? loadedRef.current?.resolved.get(selected) : undefined
+        if (
+          editModeRef.current !== 'off' &&
+          viewer &&
+          outline &&
+          outlineDistancePx(viewer, outline, event.clientX, event.clientY) <= EDGE_PICK_PX
+        ) {
+          return
+        }
+        const hit = viewer?.pick(event.clientX, event.clientY)
+        if (hit?.id !== selectedRef.current) setActiveHandle(undefined)
+        setSelectedId(hit?.id)
+        viewerRef.current?.select(hit?.id)
+        if (hit?.id) {
+          setRightTab('inspector')
+          setShowRightPanel(true)
+        }
+      }
+    },
+    [endDrag],
+  )
+
+  const onPointerMove = useCallback((event: React.PointerEvent) => {
+    const drag = dragRef.current
+    const current = loadedRef.current
+    const viewer = viewerRef.current
+    if (!drag || !current || !viewer) {
+      setHover(viewer?.pick(event.clientX, event.clientY))
+      return
+    }
+    const ray = viewer.rayAt(event.clientX, event.clientY)
+    const update = ray && drag.session.updateFromRay(ray)
+    if (!update) return
+
+    const ctx = transformContext(current.model)
+    for (const id of drag.session.surfaceIds) {
+      const surface = current.model.surfaces.get(id)
+      if (surface) drag.resolved.set(id, resolveSurface(current.model, surface, ctx))
+    }
+    viewer.refresh(current.model, drag.resolved, drag.session.surfaceIds)
+    const selected = selectedRef.current
+    viewer.setHandles((selected && drag.resolved.get(selected)?.worldVertices) || [], drag.handle)
+    viewer.setMarker(update.snap.kind === 'none' ? undefined : update.point, update.snap.kind === 'none' ? undefined : update.snap.kind)
+  }, [])
+
+  /** Double-click on an edge of the selected surface: split it there. */
+  const onDoubleClick = useCallback(
+    (event: React.MouseEvent) => {
+      const current = loadedRef.current
+      const viewer = viewerRef.current
+      const selected = selectedRef.current
+      if (!current || !viewer || editModeRef.current !== 'vertex' || !selected) return
+      const r = current.resolved.get(selected)
+      const plane = r && planeOfSurface(r)
+      const ray = viewer.rayAt(event.clientX, event.clientY)
+      const onPlane = plane && ray && intersectRayPlane(ray, plane)
+      const hit = r && onPlane && nearestEdge(r, onPlane)
+      const screen = hit && viewer.toClient(hit.point)
+      if (!hit || !screen || Math.hypot(screen.x - event.clientX, screen.y - event.clientY) > EDGE_PICK_PX) return
+
+      const result = insertVertexWorld(current.doc, current.model, selected, hit.edgeIndex, hit.point)
+      if (!result.changed) {
+        setNotice(`Cannot add a vertex: ${result.refused}.`)
+        return
+      }
+      setNotice(twinNotice(result.twin) ?? 'Vertex added — drag it to reshape the surface.')
+      commit({ refresh: result.dirtied })
+      const after = loadedRef.current?.resolved.get(selected)?.worldVertices ?? []
+      const index = after.findIndex(
+        (v) => Math.hypot(v.x - hit.point.x, v.y - hit.point.y, v.z - hit.point.z) < 1e-6,
+      )
+      setActiveHandle(index === -1 ? undefined : index)
+    },
+    [commit],
+  )
+
+  const undo = useCallback(() => {
+    const current = loadedRef.current
+    if (!current || dragRef.current) return
+    const step = current.history.undo()
+    if (!step) return
+    setNotice(`Undid: ${step.label}.`)
+    setActiveHandle(undefined)
+    commit({ rebuild: true })
+  }, [commit])
+
+  const redo = useCallback(() => {
+    const current = loadedRef.current
+    if (!current || dragRef.current) return
+    const step = current.history.redo()
+    if (!step) return
+    setNotice(`Redid: ${step.label}.`)
+    setActiveHandle(undefined)
+    commit({ rebuild: true })
+  }, [commit])
+
+  /** Delete the active vertex, or — with no vertex active — the selected surface. */
+  const deleteSelection = useCallback(() => {
+    const current = loadedRef.current
+    const selected = selectedRef.current
+    if (!current || !selected || dragRef.current) return
+    const { doc, model } = current
+
+    const handle = activeHandleRef.current
+    if (handle !== undefined) {
+      const result = deleteVertex(doc, model, selected, handle)
+      if (!result.changed) {
+        setNotice(`Cannot delete the vertex: ${result.refused}.`)
+        return
+      }
+      setNotice(twinNotice(result.twin) ?? 'Vertex deleted.')
+      setActiveHandle(undefined)
+      commit({ refresh: result.dirtied })
+      return
+    }
+
+    const plan = planSurfaceDeletion(doc, model, buildReferenceIndex(doc, model.version), selected)
+    if (!plan) return
+    const lines = [`Delete ${plan.className} '${plan.surfaceName}'?`]
+    if (plan.cascade.length > 0) {
+      lines.push('', 'Also deleted, because they cannot exist without it:')
+      for (const c of plan.cascade) lines.push(`  • ${c.className} '${c.name}'`)
+    }
+    const others = [...plan.otherReferences, ...plan.undeclaredMentions]
+    if (others.length > 0) {
+      lines.push('', `${others.length} other field(s) name it and will be left dangling:`)
+      for (const r of others.slice(0, 8)) lines.push(`  • ${doc.objects.get(r.fromId)?.className ?? r.fromClassKey}: ${r.fieldName}`)
+    }
+    if (!window.confirm(lines.join('\n'))) return
+
+    let twins: 'leave' | 'adiabatic' = 'leave'
+    if (plan.twins.length > 0) {
+      twins = window.confirm(
+        `${plan.twins.map((t) => `'${t.name}'`).join(', ')} name${plan.twins.length === 1 ? 's' : ''} this surface as ` +
+          'its interzone twin. EnergyPlus will not run while that reference dangles.\n\n' +
+          'OK: set the twin to Adiabatic.  Cancel: leave it for you to fix.',
+      )
+        ? 'adiabatic'
+        : 'leave'
+    }
+    const result = applySurfaceDeletion(doc, model, plan, { twins })
+    setNotice(
+      `Deleted ${result.deleted.length} object${result.deleted.length === 1 ? '' : 's'}` +
+        (result.repairedTwins.length > 0 ? `; ${result.repairedTwins.length} twin set to Adiabatic.` : '.'),
+    )
+    commit({ rebuild: true })
+  }, [commit])
+
+  /** Move the selected surface's whole zone by a typed offset. */
+  const moveZone = useCallback(() => {
+    const current = loadedRef.current
+    const selected = selectedRef.current
+    if (!current || !selected) return
+    const zoneId = current.model.zoneOf.get(selected)
+    const zone = zoneId === undefined ? undefined : current.model.zones.get(zoneId)
+    if (!zone || !zoneId) {
+      setNotice('The selected surface belongs to no zone.')
+      return
+    }
+    const answer = window.prompt(`Move zone '${zone.name}' by dx, dy, dz (metres, world axes):`, '0, 0, 0')
+    if (answer === null) return
+    const parts = answer.split(/[\s,]+/).filter(Boolean).map(Number)
+    if (parts.length !== 3 || parts.some((n) => !Number.isFinite(n))) {
+      setNotice('Enter three numbers: dx, dy, dz.')
+      return
+    }
+    const [x, y, z] = parts as [number, number, number]
+    const plan = planZoneTranslation(current.doc, current.model, zoneId, { x, y, z })
+    if (!plan) return
+    const warnings: string[] = []
+    if (plan.splitPairs.length > 0) {
+      warnings.push(`${plan.splitPairs.length} interzone pair(s) will no longer coincide: ` +
+        plan.splitPairs.map((p) => `${p.surfaceName} / ${p.twinName}`).join(', '))
+    }
+    if (plan.leftBehind.length > 0) {
+      warnings.push(`${plan.leftBehind.length} object(s) will be left behind: ` +
+        plan.leftBehind.map((l) => `${l.name} (${l.reason})`).join('; '))
+    }
+    if (warnings.length > 0 && !window.confirm(`${warnings.join('\n\n')}\n\nMove the zone anyway?`)) return
+    const result = applyZoneTranslation(current.doc, current.model, plan)
+    setNotice(`Moved zone '${zone.name}' — ${result.dirtied.length} object${result.dirtied.length === 1 ? '' : 's'} changed.`)
+    commit({ rebuild: true })
+  }, [commit])
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent): void => {
+      if (isTyping(event.target)) return
+      const mod = event.metaKey || event.ctrlKey
+      const key = event.key.toLowerCase()
+      if (mod && key === 'z') {
+        event.preventDefault()
+        if (event.shiftKey) redo()
+        else undo()
+      } else if (mod && key === 'y') {
+        event.preventDefault()
+        redo()
+      } else if ((key === 'delete' || key === 'backspace') && editModeRef.current !== 'off') {
+        event.preventDefault()
+        deleteSelection()
+      } else if (key === 'escape') {
+        setActiveHandle(undefined)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [undo, redo, deleteSelection])
+
+  // Vertex handles follow the selection in edit mode.
+  useEffect(() => {
+    const viewer = viewerRef.current
+    if (!viewer || dragRef.current) return
+    const r = editMode !== 'off' && selectedId ? loaded?.resolved.get(selectedId) : undefined
+    viewer.setHandles(r?.worldVertices ?? [], activeHandle)
+  }, [loaded, selectedId, editMode, activeHandle])
 
   const selectObject = useCallback((id: string) => {
     setSelectedId(id)
@@ -179,54 +581,34 @@ export function App(): React.JSX.Element {
     setRightTab('validation')
   }, [])
 
+  // Inspector edits can touch anything — a vertex coordinate, a zone origin, GlobalGeometryRules
+  // — so they rebuild the Model rather than trust the in-place sync to have covered it.
   const handleFieldChange = useCallback(
     (objectId: string, fieldIdx: number, newValue: string) => {
-      if (!loaded) return
-      const changed = setFieldValue(loaded.doc, loaded.model, objectId, fieldIdx, newValue)
-      if (!changed) return
-
-      const resolved = resolveModel(loaded.model)
-      const validation = validateModel(loaded.model, resolved, loaded.doc)
-      setLoaded({
-        ...loaded,
-        resolved,
-        validation,
-      })
-      viewerRef.current?.setColorBy(colorBy)
+      const current = loadedRef.current
+      if (!current) return
+      if (!setFieldValue(current.doc, current.model, objectId, fieldIdx, newValue)) return
+      commit({ rebuild: true })
     },
-    [loaded, colorBy],
+    [commit],
   )
 
   const handleRevertObject = useCallback(
     (objectId: string) => {
-      if (!loaded) return
-      const reverted = revertObject(loaded.doc, loaded.model, objectId)
-      if (!reverted) return
-
-      const resolved = resolveModel(loaded.model)
-      const validation = validateModel(loaded.model, resolved, loaded.doc)
-      setLoaded({
-        ...loaded,
-        resolved,
-        validation,
-      })
-      viewerRef.current?.setColorBy(colorBy)
+      const current = loadedRef.current
+      if (!current) return
+      if (!revertObject(current.doc, current.model, objectId)) return
+      commit({ rebuild: true })
     },
-    [loaded, colorBy],
+    [commit],
   )
 
   const handleRevertAll = useCallback(() => {
-    if (!loaded) return
-    revertAll(loaded.doc, loaded.model)
-    const resolved = resolveModel(loaded.model)
-    const validation = validateModel(loaded.model, resolved, loaded.doc)
-    setLoaded({
-      ...loaded,
-      resolved,
-      validation,
-    })
-    viewerRef.current?.setColorBy(colorBy)
-  }, [loaded, colorBy])
+    const current = loadedRef.current
+    if (!current) return
+    revertAll(current.doc, current.model)
+    commit({ rebuild: true })
+  }, [commit])
 
   const model = loaded?.model
   const validation = loaded?.validation
@@ -330,6 +712,97 @@ export function App(): React.JSX.Element {
           Fit
         </button>
 
+        {loaded && (
+          <>
+            <span className="bar__group" role="group" aria-label="Edit geometry">
+              {(['off', 'vertex', 'corner'] as const).map((mode) => (
+                <button
+                  key={mode}
+                  type="button"
+                  className={editMode === mode ? 'button--active' : ''}
+                  onClick={() => {
+                    setEditMode(mode)
+                    setActiveHandle(undefined)
+                    setNotice(
+                      mode === 'vertex'
+                        ? 'Select a surface, then drag a handle within its plane. Double-click an edge to add a vertex; Delete removes the active vertex, or the surface.'
+                        : mode === 'corner'
+                          ? 'Select a surface, then drag a corner in plan: everything on that vertical edge moves together.'
+                          : undefined,
+                    )
+                  }}
+                  title={
+                    mode === 'off'
+                      ? 'Select and inspect only'
+                      : mode === 'vertex'
+                        ? 'Drag vertices within their surface plane'
+                        : 'Drag building corners in plan'
+                  }
+                >
+                  {mode === 'off' ? 'Select' : mode === 'vertex' ? 'Vertex' : 'Corner'}
+                </button>
+              ))}
+            </span>
+
+            {editMode !== 'off' && (
+              <span className="bar__group" role="group" aria-label="Snapping">
+                Snap
+                {(['vertex', 'edge', 'grid'] as const).map((kind) => (
+                  <label key={kind} className="bar__check">
+                    <input
+                      type="checkbox"
+                      checked={snap[kind]}
+                      onChange={(e) => setSnap({ ...snap, [kind]: e.target.checked })}
+                    />
+                    {kind}
+                  </label>
+                ))}
+                {snap.grid && (
+                  <select
+                    value={snap.gridSize}
+                    onChange={(e) => setSnap({ ...snap, gridSize: Number(e.target.value) })}
+                    title="Grid spacing"
+                  >
+                    {[0.01, 0.05, 0.1, 0.25, 0.5, 1].map((g) => (
+                      <option key={g} value={g}>
+                        {g} m
+                      </option>
+                    ))}
+                  </select>
+                )}
+              </span>
+            )}
+
+            {editMode !== 'off' && selectedId && loaded.model.surfaces.has(selectedId) && (
+              <>
+                <button type="button" onClick={moveZone} title="Translate the selected surface's zone">
+                  Move zone…
+                </button>
+                <button type="button" onClick={deleteSelection} title="Delete the active vertex, or the surface">
+                  Delete
+                </button>
+              </>
+            )}
+
+            <button
+              type="button"
+              onClick={undo}
+              disabled={!loaded.history.canUndo}
+              title={loaded.history.undoLabel ? `Undo ${loaded.history.undoLabel} (Ctrl+Z)` : 'Nothing to undo'}
+            >
+              Undo
+            </button>
+            <button
+              type="button"
+              onClick={redo}
+              disabled={!loaded.history.canRedo}
+              title={loaded.history.redoLabel ? `Redo ${loaded.history.redoLabel} (Ctrl+Shift+Z)` : 'Nothing to redo'}
+            >
+              Redo
+            </button>
+          </>
+        )}
+
         <span className="spacer" />
         {loaded && (
           <span className="meta">
@@ -356,11 +829,24 @@ export function App(): React.JSX.Element {
         <div className="stage">
           <canvas
             ref={canvasRef}
+            className={editMode !== 'off' ? 'canvas--edit' : undefined}
+            onPointerDownCapture={onPointerDownCapture}
             onPointerDown={onPointerDown}
             onPointerUp={onPointerUp}
+            onPointerCancel={endDrag}
             onPointerMove={onPointerMove}
+            onDoubleClick={onDoubleClick}
             onPointerLeave={() => setHover(undefined)}
           />
+
+          {notice && (
+            <div className="notice" role="status">
+              <span>{notice}</span>
+              <button type="button" className="notice__close" onClick={() => setNotice(undefined)} aria-label="Dismiss">
+                ×
+              </button>
+            </div>
+          )}
 
           {!loaded && !error && (
             <p className="empty">Drop an .idf file here, or use Open IDF.</p>

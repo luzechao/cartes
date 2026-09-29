@@ -29,6 +29,7 @@ import {
   constructionColor,
   FENESTRATION_OFFSET,
   hoverInfo,
+  refreshSurfaces,
   SceneRegistry,
   SURFACE_TYPE_COLORS,
   surfaceEdgePositions,
@@ -610,4 +611,36 @@ describe('all-Tier-3 files', () => {
       expect(model.diagnostics.filter((d) => d.severity === 'error')).toEqual([])
     })
   }
+})
+
+describe('refreshSurfaces — the per-frame drag path', () => {
+  it('redraws only the surfaces named, and draws them exactly as a fresh build would', () => {
+    const doc = parseIdf(REVERSED_WINDOW)
+    const model = buildModel(doc)
+    const build = buildScene(model, resolveModel(model))
+    const wall = [...build.registry].find((e) => e.name === 'WALL')!
+    const win = [...build.registry].find((e) => e.name === 'WIN')!
+    const winBuffer = win.mesh.geometry
+
+    const wallId = wall.id
+    const surface = model.surfaces.get(wallId)!
+    surface.vertices[3] = { x: 5, y: 0, z: 3 }
+    const resolved = resolveModel(model)
+
+    expect(refreshSurfaces(build, model, resolved, [wallId])).toEqual([])
+    expect(win.mesh.geometry, 'an unnamed surface was redrawn').toBe(winBuffer)
+
+    const fresh = buildScene(model, resolved)
+    const freshWall = [...fresh.registry].find((e) => e.name === 'WALL')!
+    expect(positionsOf(wall.mesh)).toEqual(positionsOf(freshWall.mesh))
+    const edgePositions = (e: SceneEntry): number[] =>
+      Array.from(((e.edges as unknown as { geometry: BufferGeometry }).geometry.getAttribute('instanceStart') as unknown as { data: { array: Float32Array } }).data.array)
+    expect(edgePositions(wall)).toEqual(edgePositions(freshWall))
+  })
+
+  it('hands back surfaces it cannot redraw, rather than dropping them', () => {
+    const model = buildModel(parseIdf(REVERSED_WINDOW))
+    const build = buildScene(model, resolveModel(model))
+    expect(refreshSurfaces(build, model, resolveModel(model), ['no-such-surface'])).toEqual(['no-such-surface'])
+  })
 })

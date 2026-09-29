@@ -42,9 +42,20 @@ const GEOMETRY_GROUP = 'Thermal Zones and Surfaces'
  * Appendix G`, which EnergyPlus applies to every vertex *even in World coordinates*
  * (`SurfaceGeometry.cc`, the `CosBldgRotAppGonly` branch). Without it the geometry layer
  * silently disagrees with EnergyPlus on every Appendix G baseline model.
+ *
+ * `Daylighting:ReferencePoint` and `Output:IlluminanceMap` live in "Daylighting" but are
+ * positioned in a zone's coordinate frame (per `GlobalGeometryRules` field 4), so a whole-zone
+ * translate must carry them with it or leave the sensors outside the room they measure.
  */
 const EXTRA_CLASSES = new Set(
-  ['Version', 'Building', 'Compliance:Building', 'Construction'].map((c) => c.toLowerCase()),
+  [
+    'Version',
+    'Building',
+    'Compliance:Building',
+    'Construction',
+    'Daylighting:ReferencePoint',
+    'Output:IlluminanceMap',
+  ].map((c) => c.toLowerCase()),
 )
 
 // ---------------------------------------------------------------------------
