@@ -21,9 +21,9 @@ jobs:
   build:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: npm
@@ -32,7 +32,7 @@ jobs:
 
       # The IDD field table is generated from EnergyPlus's IDD files, which are fetched rather than
       # committed. Cached, since they only change when the list of versions does.
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: idd-cache
           key: idd-${{ hashFiles('scripts/fetch-idd.sh') }}
@@ -42,7 +42,7 @@ jobs:
       # The fixture corpus: 126 develop files pinned to one EnergyPlus commit and verified by hash,
       # plus samples from eight releases. EnergyPlus itself is not installed, so the gates that run
       # it skip themselves; everything else — the round-trip and corpus gates included — runs.
-      - uses: actions/cache@v4
+      - uses: actions/cache@v6
         with:
           path: test/fixtures
           key: fixtures-${{ hashFiles('scripts/fetch-fixtures.sh', 'test/fixtures/testfiles.manifest') }}
@@ -55,7 +55,7 @@ jobs:
         env:
           CARTES_BASE: /${{ github.event.repository.name }}/
 
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@v5
         with:
           path: dist
 
@@ -67,4 +67,4 @@ jobs:
       url: ${{ steps.deployment.outputs.page_url }}
     steps:
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
