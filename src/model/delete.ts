@@ -223,6 +223,15 @@ function applyDeletion(
 }
 
 /**
+ * Remove objects outright, with no referential checks — for callers that have already made the
+ * references right, such as a conversion that replaces an object with an equivalent one of the
+ * same name. One undo step. Returns the ids actually removed.
+ */
+export function removeObjects(doc: IdfDocument, ids: readonly string[]): string[] {
+  return transact(doc, 'Remove objects', () => ids.filter((id) => removeObject(doc, id)))
+}
+
+/**
  * Remove an object from the document, recording its source span so the emitter skips it.
  *
  * The span is widened to swallow the run of blank space up to and including the newline that

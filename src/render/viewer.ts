@@ -32,6 +32,7 @@ import {
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import type { SceneBuild } from './scene.js'
 import { applyColorBy, refreshSurfaces, type ColorBy } from './scene.js'
+import { applyStoreyDisplay, type StoreyDisplay, type StoreyMap } from './storeys.js'
 import type { SceneEntry } from './registry.js'
 import type { Model, Vec3 } from '../model/index.js'
 import type { ResolvedSurface } from '../geometry/index.js'
@@ -439,6 +440,57 @@ export class Viewer {
     const selected = this._selectedId
     this.setBuild(build)
     if (selected && build.registry.get(selected)) this.select(selected)
+  }
+
+  /** Pull storeys apart, or show one alone. See `storeys.ts`. */
+  setStoreyDisplay(map: StoreyMap, display: StoreyDisplay): void {
+    if (!this.build) return
+    applyStoreyDisplay(this.build, map, display)
+    this.requestRender()
+  }
+
+  /** Camera position and orbit target, in three's (Y-up) world frame — for shareable view links. */
+  getCamera(): { position: [number, number, number]; target: [number, number, number] } {
+    const p = this.camera.position
+    const t = this.controls.target
+    return { position: [p.x, p.y, p.z], target: [t.x, t.y, t.z] }
+  }
+
+  setCamera(view: { position: readonly number[]; target: readonly number[] }): void {
+    const [px, py, pz] = view.position
+    const [tx, ty, tz] = view.target
+    if (![px, py, pz, tx, ty, tz].every((n) => typeof n === 'number' && Number.isFinite(n))) return
+    this.camera.position.set(px!, py!, pz!)
+    this.controls.target.set(tx!, ty!, tz!)
+    // Near/far as `fit` would choose them for this distance, so a shared view is not clipped.
+    const distance = this.camera.position.distanceTo(this.controls.target)
+    this.camera.near = Math.max(distance / 1000, 0.01)
+    this.camera.far = Math.max(distance * 10, 1000)
+    this.camera.updateProjectionMatrix()
+    this.controls.update()
+    this.requestRender()
+  }
+
+  /** Subscribe to camera movement; returns the unsubscribe function. */
+  onCameraChange(listener: () => void): () => void {
+    this.controls.addEventListener('change', listener)
+    return () => this.controls.removeEventListener('change', listener)
+  }
+
+  /**
+   * The current view as a PNG data URL, without the editing overlays (handles, snap marker,
+   * sketch). Rendered and read back in the same call, so the drawing buffer need not be
+   * preserved between frames.
+   */
+  snapshot(): string {
+    const overlays = [this.handles, this.activeHandle, this.marker, this.sketch, this.sketchPoints]
+    const was = overlays.map((o) => o.visible)
+    overlays.forEach((o) => (o.visible = false))
+    this.renderer.render(this.scene, this.camera)
+    const url = this.renderer.domElement.toDataURL('image/png')
+    overlays.forEach((o, i) => (o.visible = was[i]!))
+    this.requestRender()
+    return url
   }
 
   dispose(): void {

@@ -1137,3 +1137,10 @@ button:disabled {
   color: #fff;
   border-color: #b3261e;
 }
+
+.alert__action,
+.empty__action {
+  margin-left: 6px;
+  cursor: pointer;
+  pointer-events: auto;
+}

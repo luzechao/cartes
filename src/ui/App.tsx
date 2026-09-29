@@ -26,6 +26,7 @@ import {
 } from '../model/index.js'
 import {
   applyMatchProposals,
+  applyTier3Conversion,
   applyZoneTranslation,
   buildSnapIndex,
   extrudeZone,
@@ -42,6 +43,7 @@ import {
   nearestEdge,
   planDrag,
   planeOfSurface,
+  planTier3Conversion,
   planZoneTranslation,
   proposeMatches,
   resolveModel,
@@ -57,12 +59,13 @@ import {
   type ValidationIssue,
   type ValidationReport,
 } from '../geometry/index.js'
-import { buildScene, Viewer, type ColorBy, type HoverInfo } from '../render/index.js'
+import { buildScene, computeStoreys, Viewer, type ColorBy, type HoverInfo, type StoreyDisplay } from '../render/index.js'
 import { ObjectTree } from './ObjectTree.js'
 import { Inspector } from './Inspector.js'
 import { DiffPanel } from './DiffPanel.js'
 import { MatchPanel } from './MatchPanel.js'
 import { useDialog } from './Dialog.js'
+import { decodeViewState, encodeViewState, type DisplayState } from './viewState.js'
 
 interface LoadedFile {
   name: string
@@ -172,6 +175,7 @@ export function App(): React.JSX.Element {
   const [snap, setSnap] = useState<SnapSettings>(DEFAULT_SNAP_SETTINGS)
   const [activeHandle, setActiveHandle] = useState<number | undefined>(undefined)
   const [notice, setNotice] = useState<string | undefined>(undefined)
+  const [display, setDisplay] = useState<DisplayState>({ mode: 'stacked' })
   const { ask, element: dialog } = useDialog()
 
   // Pointer and keyboard handlers outlive a render; they read the current state through these.
@@ -181,6 +185,8 @@ export function App(): React.JSX.Element {
   const activeHandleRef = useRef<number | undefined>(undefined)
   const dragRef = useRef<ActiveDrag | undefined>(undefined)
   const sketchRef = useRef<Sketch | undefined>(undefined)
+  // Read once, at page load: the view a shared link asks for.
+  const sharedViewRef = useRef<ReturnType<typeof decodeViewState> | undefined>(decodeViewState(globalThis.location?.hash ?? ''))
   const colorByRef = useRef<ColorBy>('type')
   const snapRef = useRef<SnapSettings>(DEFAULT_SNAP_SETTINGS)
   loadedRef.current = loaded
@@ -211,14 +217,63 @@ export function App(): React.JSX.Element {
       setStats(undefined)
       return
     }
-    const build = buildScene(loaded.model, loaded.resolved, { colorBy })
+    // A shared link's view, if the page was opened with one — consumed by the first file opened,
+    // never again: after that the fragment is this session's own, rewritten as the view changes.
+    const shared = sharedViewRef.current ?? {}
+    sharedViewRef.current = undefined
+    const colorMode = shared.colorBy ?? colorBy
+    const build = buildScene(loaded.model, loaded.resolved, { colorBy: colorMode })
     viewer.setBuild(build)
     viewer.fit()
+    if (shared.camera) viewer.setCamera(shared.camera)
+    if (shared.colorBy) setColorBy(shared.colorBy)
+    setDisplay(shared.display ?? { mode: 'stacked' })
     setStats({ drawn: build.registry.size, skipped: build.skipped.length })
     setHover(undefined)
-    setSelectedId(undefined)
+    const sel = shared.selected
+      ? [...loaded.model.surfaces.values()].find((x) => x.name === shared.selected)?.id
+      : undefined
+    setSelectedId(sel)
+    viewer.select(sel)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loaded?.originalSource])
+
+  const storeys = useMemo(() => (loaded ? computeStoreys(loaded.model, loaded.resolved) : undefined), [loaded])
+
+  // Storey display follows the model: after an edit rebuilds the scene, it is reapplied.
+  useEffect(() => {
+    const viewer = viewerRef.current
+    if (!viewer || !storeys) return
+    const d: StoreyDisplay =
+      display.mode === 'solo' && display.storey >= storeys.storeys.length ? { mode: 'stacked' } : display
+    viewer.setStoreyDisplay(storeys, d)
+  }, [storeys, display, stats])
+
+  // Keep the URL fragment describing the current view, so the address bar is always a share link.
+  useEffect(() => {
+    const viewer = viewerRef.current
+    if (!viewer || !loaded) return
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const write = (): void => {
+      clearTimeout(timer)
+      timer = setTimeout(() => {
+        const selected = selectedRef.current ? loadedRef.current?.doc.objects.get(selectedRef.current)?.fields[0]?.value : undefined
+        const hash = encodeViewState({
+          camera: viewer.getCamera(),
+          ...(selected ? { selected } : {}),
+          colorBy: colorByRef.current,
+          display,
+        })
+        globalThis.history?.replaceState(null, '', `#${hash}`)
+      }, 250)
+    }
+    write()
+    const off = viewer.onCameraChange(write)
+    return () => {
+      off()
+      clearTimeout(timer)
+    }
+  }, [loaded, selectedId, colorBy, display])
 
   useEffect(() => {
     viewerRef.current?.setColorBy(colorBy)
@@ -888,6 +943,63 @@ export function App(): React.JSX.Element {
     [loaded],
   )
 
+  /**
+   * Tier-3 → detailed, as an explicit action with the consequences shown first — never automatic
+   * (docs/05-implementation-plan.md §Phase 9).
+   */
+  const convertSimplified = useCallback(async () => {
+    const current = loadedRef.current
+    if (!current) return
+    const plan = planTier3Conversion(current.doc, current.model)
+    if (plan.conversions.length === 0 && plan.refused.length === 0) return
+    const counts = new Map<string, number>()
+    for (const c of plan.conversions) counts.set(c.sourceClass, (counts.get(c.sourceClass) ?? 0) + 1)
+    const message = [
+      `${plan.conversions.length} simplified object${plan.conversions.length === 1 ? '' : 's'} will be rewritten with explicit vertices, ` +
+        'computed exactly as EnergyPlus computes them. Names are kept, so every reference still resolves.',
+      ...[...counts].map(([k, n]) => `• ${k} ×${n}`),
+      ...plan.notes,
+      ...(plan.refused.length > 0
+        ? [`${plan.refused.length} cannot be converted and will be left as they are:`, ...plan.refused.map((r) => `• ${r.name}: ${r.reason}`)]
+        : []),
+    ]
+    if (plan.conversions.length === 0) {
+      await ask({ title: 'Nothing can be converted', message, confirmLabel: 'OK' })
+      return
+    }
+    if (!(await ask({ title: 'Convert simplified surfaces to detailed?', message, confirmLabel: 'Convert' }))) return
+    const result = applyTier3Conversion(current.doc, current.model, plan)
+    setNotice(`Converted ${result.removed.length} simplified objects into ${result.created.length} detailed ones. Ctrl+Z undoes it.`)
+    commit({ rebuild: true })
+    viewerRef.current?.fit()
+  }, [ask, commit])
+
+  const shareView = useCallback(async () => {
+    const url = globalThis.location?.href ?? ''
+    try {
+      await navigator.clipboard.writeText(url)
+      setNotice('Link to this view copied. Whoever opens the same file with it sees what you see.')
+    } catch {
+      // Some embedded browsers refuse clipboard access; the link is still there to copy by hand.
+      await ask({
+        title: 'Share this view',
+        message: ['Whoever opens the same file with this link sees what you see. The model itself is not in the link.'],
+        fields: [{ key: 'url', label: 'Link', value: url }],
+        confirmLabel: 'Done',
+      })
+    }
+  }, [ask])
+
+  const saveImage = useCallback(() => {
+    const viewer = viewerRef.current
+    const current = loadedRef.current
+    if (!viewer || !current) return
+    const a = document.createElement('a')
+    a.href = viewer.snapshot()
+    a.download = current.name.replace(/\.[^.]+$/, '') + '.png'
+    a.click()
+  }, [])
+
   const applyMatches = useCallback(
     (proposals: MatchProposal[]) => {
       const current = loadedRef.current
@@ -1022,6 +1134,45 @@ export function App(): React.JSX.Element {
           Fit
         </button>
 
+        {loaded && storeys && storeys.storeys.length > 1 && (
+          <label title="Pull storeys apart, or show one at a time">
+            Storeys{' '}
+            <select
+              value={display.mode === 'solo' ? `solo:${display.storey}` : display.mode}
+              onChange={(e) => {
+                const v = e.target.value
+                const next: DisplayState =
+                  v === 'exploded' ? { mode: 'exploded' } : v.startsWith('solo:') ? { mode: 'solo', storey: Number(v.slice(5)) } : { mode: 'stacked' }
+                setDisplay(next)
+                // Editing works in the model's own frame; with storeys moved or hidden it would not.
+                if (next.mode !== 'stacked') {
+                  setEditMode('off')
+                  setActiveHandle(undefined)
+                }
+              }}
+            >
+              <option value="stacked">stacked</option>
+              <option value="exploded">exploded</option>
+              {storeys.storeys.map((st) => (
+                <option key={st.index} value={`solo:${st.index}`}>
+                  storey {st.index + 1} only (z {+st.z.toFixed(2)} m, {st.zoneIds.length} zone{st.zoneIds.length === 1 ? '' : 's'})
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+
+        {loaded && (
+          <>
+            <button type="button" onClick={shareView} title="Copy a link to this view">
+              Link
+            </button>
+            <button type="button" onClick={saveImage} title="Save the view as a PNG image">
+              Image
+            </button>
+          </>
+        )}
+
         {loaded && (
           <>
             <span className="bar__group" role="group" aria-label="Edit geometry">
@@ -1029,6 +1180,7 @@ export function App(): React.JSX.Element {
                 <button
                   key={mode}
                   type="button"
+                  disabled={mode !== 'off' && display.mode !== 'stacked'}
                   className={editMode === mode ? 'button--active' : ''}
                   onClick={() => {
                     setEditMode(mode)
@@ -1192,7 +1344,12 @@ export function App(): React.JSX.Element {
                   </p>
                   <p className="empty__detail">
                     cartes reads and preserves them exactly — saving this file returns it
-                    byte-for-byte — but does not yet derive their vertices.
+                    byte-for-byte. Converting them writes the vertices EnergyPlus would compute.
+                  </p>
+                  <p>
+                    <button type="button" className="empty__action" onClick={convertSimplified}>
+                      Convert to detailed…
+                    </button>
                   </p>
                 </>
               ) : (
@@ -1351,7 +1508,10 @@ export function App(): React.JSX.Element {
         {unrendered > 0 && (stats?.drawn ?? 0) > 0 && (
           <span className="alert">
             {unrendered} object{unrendered === 1 ? '' : 's'} not drawn (
-            {[...model!.unrendered].map(([k, n]) => `${k} ×${n}`).join(', ')})
+            {[...model!.unrendered].map(([k, n]) => `${k} ×${n}`).join(', ')}){' '}
+            <button type="button" className="alert__action" onClick={convertSimplified}>
+              Convert to detailed…
+            </button>
           </span>
         )}
         {stats && stats.skipped > 0 && (

@@ -772,13 +772,101 @@ footprint areas (69.58, 45.78 m²) and its volumes are exactly those × 3 m.
 
 ## Phase 9 — Polish and reach · M
 
-- Shareable view state — URL-encoded rather than EPShape's clipboard string.
-- Screenshot / image export.
-- Exploded and stacked zone display modes (borrowed from Pascal's level display modes;
-  genuinely useful for multi-storey review).
-- Tier-3 simple-class → detailed conversion, as an **explicit user action**, never automatic.
-- Possible MCP server, so an LLM can drive the scene. Pascal has this and nothing in BEM does.
-  A protocol, not a framework — cheap to add once the Model layer is stable.
+**Status: ✅ complete.** 685 tests green (654 from Phases 1–8, 31 new), `tsc --noEmit` and
+`vite build` clean. Tier-3 conversion gated against EnergyPlus 26.1.0 in six geometric variants
+of each of the two runnable files; every UI feature exercised in a browser; the MCP server
+exercised through the protocol and as a real stdio process.
+
+- ✅ Shareable view state — URL-encoded rather than EPShape's clipboard string.
+- ✅ Screenshot / image export.
+- ✅ Exploded and stacked zone display modes (borrowed from Pascal's level display modes;
+  genuinely useful for multi-storey review), plus one storey alone.
+- ✅ Tier-3 simple-class → detailed conversion, as an **explicit user action**, never automatic.
+- ✅ An MCP server, so an LLM can drive the model. A protocol, not a framework.
+
+### What was built
+
+| Piece | Notes |
+|---|---|
+| `src/geometry/tier3.ts` | `planTier3Conversion` / `applyTier3Conversion` for all 22 simplified classes — rectangular base surfaces, windows and doors (plain and interzone), site and building shading, overhangs and fins (plain and projection). A transcription of EnergyPlus 26.1's `GetRectSurfaces`, `MakeRectangularVertices`, `GetRectSubSurfaces`, `MakeRelativeRectangularVertices`, `GetRectDetShdSurfaceData`, `GetSimpleShdSurfaceData` and `DetermineAzimuthAndTilt`, quirks included. Hosts may be simplified or detailed. Names are kept; each new object replaces the old one in place; one undo step; refusals and behaviour changes listed before anything is written. |
+| `src/model/delete.ts` `removeObjects` | Removal without referential checks, for callers that keep references right themselves. |
+| `src/render/storeys.ts` | `computeStoreys` (zones grouped by floor elevation, 0.5 m tolerance for split levels), `applyStoreyDisplay` (stacked / exploded / solo, as a transform on the scene graph), `explodeGap`. Headless. |
+| `src/render/viewer.ts` | `setStoreyDisplay`, `getCamera` / `setCamera` / `onCameraChange`, and `snapshot()` — a PNG of the view with editing overlays hidden, rendered and read back in one call so the drawing buffer need not be preserved. |
+| `src/ui/viewState.ts` | The URL fragment codec: camera, selection by name, colour mode, storey display. Total decoding — malformed fields are dropped, never thrown. |
+| `src/ui/App.tsx` | **Convert to detailed…** on the "not drawn" footer and the all-simplified empty state; **Storeys** selector (editing disabled while storeys are moved or hidden); **Link** (clipboard, or a dialog when the clipboard is refused); **Image**. The address bar always holds the current view; a link's view is applied to the first file opened after page load and never again. |
+| `src/mcp/session.ts`, `src/mcp/server.ts`, `scripts/mcp-server.ts` | `ModelSession` — every UI operation, addressed by name, returning JSON, on the same undo history — and 19 MCP tools over it (`npm run mcp`). Deliberate refusals come back as tool errors carrying the reason; nothing is written until `save_idf`, and only to `.idf`. |
+| `test/geometry/eplus-tier3.test.ts` | The conversion gate, with EnergyPlus's own surface report as the oracle. |
+| `test/geometry/tier3.test.ts`, `test/render/storeys.test.ts`, `test/mcp/server.test.ts` | Arithmetic by hand, the corpus pass, storeys and the view codec, and the MCP server through a real client. |
+
+### Gate outcomes — measured
+
+**Tier-3 conversion, against EnergyPlus.** `Output:Surfaces:List, DetailsWithVertices` makes
+EnergyPlus report every surface it built. The two corpus files that run —
+`4ZoneWithShading_Simple_1` (World/World) and `_2` (Relative/Relative) — use all 22 classes
+between them, but with no rotation and matching coordinate-system fields. So each ran as shipped
+and with five injected variants: a 30° north axis; 20° zone north with −15° building; a 17°
+Appendix G rotation; the rectangular coordinate system flipped; and flipped *with* both rotations.
+**12/12:**
+
+- **Our vertices are EnergyPlus's:** all 45 and 41 converted surfaces per variant agree with
+  EnergyPlus's report to its two printed decimals (worst 4.9e-3 m; 9e-15 m where coordinates are
+  exact).
+- **After conversion EnergyPlus reads the same building:** all 57 and 53 surfaces present, every
+  field equal (class, base, construction, areas, azimuth, tilt, width, height, boundary, exposure,
+  view factors, vertices), the same warnings as text, no new severe, the same zone report.
+  The one intended difference is asserted: each `Ceiling:Interzone` now names the floor above
+  (below).
+- **Mutation-tested:** driving the azimuth offset from the rectangular coordinate-system field
+  instead of the main one passes every variant *except* the combined one, which fails in both
+  files. That variant exists because the first five could not tell the two fields apart.
+
+Over the whole corpus, including older releases: **470 simplified objects in 11 files
+converted, none refused**, no new validation error — except the two below, which converting
+reveals.
+
+**The UI, in a browser.** `4ZoneWithShading_Simple_1.idf` opened to an empty stage offering
+conversion. The dialog listed all 14 classes with counts and the `Ceiling:Interzone`
+consequence; afterwards there were 45 surfaces and two storeys. Stacked, exploded and "storey 2
+only" were rendered by the app's own `snapshot()` — the Image feature — and are what they
+should be. A link sent with an orbited camera, a selected surface, construction colouring and
+exploded storeys was opened fresh with the same file and restored all four: camera to the
+millimetre, `C1-1` in the inspector. A second file in that session fitted its own view.
+
+**The MCP server**, through a real MCP client: 19 tools listed with schemas. A two-storey model
+was authored entirely by tool calls — three zones, two proposals applied, three windows, an
+interzone door made on both sides — with undo and redo in between. Validation came back empty,
+and the saved file **runs in EnergyPlus with no severe and no warning**, at 30/20/30 m² and
+90/60/90 m³. Also through the tools: a shipped all-simplified file was converted, then edited,
+undone back to a **zero-line diff**; refusals come back as errors carrying their reasons. As a
+separate process, `npm run mcp` answered a stdio client.
+
+### Discovered en route
+
+- **EnergyPlus 26.1 ignores `Ceiling:Interzone`'s boundary object.** Its reader sets the
+  interzone flag for `Wall:Interzone` and `Floor:Interzone` but not for this class, so the
+  ceiling references *itself* while the floor above still names it — a one-sided pair EnergyPlus
+  accepts silently, and reports as such. A faithful conversion would write that asymmetry out
+  explicitly, which EnergyPlus rejects as fatal. So the converter honours what the file declares,
+  says so before converting, and the gate asserts that exactly those surfaces change.
+- **Converting reveals a shipped defect.** In `4ZoneWithShading_Simple_2.idf` two
+  `Floor:Interzone` surfaces name `Ceiling:Adiabatic` roofs as their twins. EnergyPlus runs it;
+  the validator could not see it while the surfaces had no vertices. After conversion it reports
+  `boundary-asymmetric` on exactly those two, and the corpus test pins that.
+- **A floor's length runs backwards.** At azimuth 0 and tilt 180, EnergyPlus's formula lays the
+  length along −x, so simplified floors start at their far corner. A hand-written test fixture got
+  this wrong; the code, checked against EnergyPlus, did not.
+- **The address bar is not an incoming link.** The first version applied the URL's view every
+  time a file opened — including the fragment the app had just written for the previous file,
+  so a second file opened with the first file's camera. A link's view is now read once, at page
+  load.
+- **A hidden browser tab hides everything.** It freezes `requestAnimationFrame` (and with it
+  Playwright's stability checks and our render loop), throttles timers, and here left the page
+  screenshot showing a stale frame. Rendering through our own `snapshot()` sidestepped all three
+  and tested the export at the same time.
+- **The MCP layer was cheap because the library already was one.** Every Phase 5–9 operation was
+  a plain function over the Document with its own undo, so the server is a list of tool
+  definitions. Addressing by name rather than id is the one real design choice, because a model
+  talking to it has names and never sees ids.
 
 ---
 
@@ -872,8 +960,19 @@ outcomes.
     enclosure), agreeing with EnergyPlus on every case measured. Gate met under four vertex
     conventions and through the browser. **Green: 654 tests. Phase 8 complete.**
 
-**Next — Phase 9 — Polish and reach.** Shareable view state, image export, exploded/stacked
-display, explicit Tier-3 → detailed conversion, and possibly an MCP server.
+18. ✅ Polish and reach: Tier-3 → detailed conversion (gated against EnergyPlus's own surface
+    report in 12 variants, 470 corpus objects converted), exploded/solo storey display, shareable
+    view links, image export, and an MCP server of 19 tools that authored a model EnergyPlus runs
+    clean. **Green: 685 tests. Phase 9 complete — the plan is done.**
+
+**Beyond the plan**, in the order the gaps argue for:
+
+1. **Intersect-and-match.** Split partial overlaps so the matcher can pair them — the last piece
+   of OpenStudio-style surface matching, and the gap most likely to bite on drawn models.
+2. **Sloped roofs and non-rectangular openings in the drawing tools** (the API already takes them).
+3. **CI for the EnergyPlus gates** — fixture fetch plus an EnergyPlus install on the runner.
+4. **MCP driving the live browser scene**, not just files: a small bridge from the server to an
+   open tab would let an LLM's edits appear as they are made.
 
 Still recorded rather than closed:
 
@@ -911,6 +1010,11 @@ Carried-forward gaps, all low-risk and recorded rather than forgotten:
   moved wall's windows stay put — corner mode refuses fenestrated walls for that reason, vertex
   mode lets the validator report the containment break. (The `window.confirm` confirmations noted
   here were replaced by an in-app dialog in Phase 8.)
+- **Tier-3 conversion refuses files with `GeometryTransform`,** which it does not reproduce; none
+  is in the corpus. The one corpus file that needs an external CSV to run (`HybridModel_…`)
+  converts, but could not be checked against EnergyPlus.
+- **The MCP server edits files, not the open browser tab.** Results are seen by opening the saved
+  file.
 - **The EnergyPlus gate needs a local binary and a local corpus.** `test/fixtures/` is
   gitignored (fetched, not committed) and E+ is not a package dependency, so the gate
   `describe.skipIf`s itself into silence on a machine without both. It is green locally
