@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "description": "Browser-based two-way 3D geometry editor for EnergyPlus IDF files",
+  "license": "Apache-2.0",
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",

@@ -26,6 +26,8 @@
  *
  * An explicit user action, never automatic: `planTier3Conversion` changes nothing and lists what
  * it would write and anything it cannot convert; `applyTier3Conversion` does it as one undo step.
+ *
+ * Derived from EnergyPlus source code; see NOTICE for its copyright notice and license.
  */
 import type { IdfDocument, IdfObject } from '../parser/types.js'
 import type { CoordinateSystem, Model, Vec3, Zone } from '../model/index.js'

@@ -8,6 +8,8 @@
  *
  * Nothing here writes back to the document. Resolution is derived state; the file's
  * `Relative` vertices stay relative.
+ *
+ * Derived from EnergyPlus source code; see NOTICE for its copyright notice and license.
  */
 import type {
   CoordinateSystem,

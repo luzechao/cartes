@@ -5,6 +5,8 @@
  * definitions in docs/03-idf-geometry.md and from `SurfaceGeometry.cc`. That ordering is the
  * point: a sign error in a rotation produces coordinates that look entirely plausible, so a
  * test whose expectations came out of the implementation would pass just as happily.
+ *
+ * Derived from EnergyPlus source code; see NOTICE for its copyright notice and license.
  */
 import { describe, expect, it } from 'vitest'
 import { readFileSync } from 'node:fs'

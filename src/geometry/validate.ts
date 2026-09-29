@@ -9,6 +9,8 @@
  * - Zero false positives over shipped EnergyPlus models: real defects in example files are
  *   triaged and confirmed; valid modeling practices (e.g. window reveal setbacks, shared
  *   floor slabs, plenums) are handled with appropriate tolerance or warning levels.
+ *
+ * Derived from EnergyPlus source code; see NOTICE for its copyright notice and license.
  */
 import type { IdfDocument } from '../parser/types.js'
 import { lookupInClass, type Model, type Surface, type Vec3 } from '../model/index.js'

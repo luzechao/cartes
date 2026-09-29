@@ -111,5 +111,9 @@ Pure client-side, no backend; the optional MCP server runs the same library in N
 
 ## License
 
-Not yet chosen. Note: VI-Suite is GPL v2 — its exporter is a *reference*, do not copy code.
-See `docs/02-prior-art.md` §Licensing.
+[Apache License 2.0](LICENSE). See [NOTICE](NOTICE): parts of the geometry code are transcribed
+from EnergyPlus, whose BSD-style copyright notice and conditions travel with them.
+
+cartes is an independent project, not affiliated with or endorsed by the U.S. Department of
+Energy or the EnergyPlus developers. VI-Suite (GPL v2) was studied as a *reference* only — no
+code is copied from it; see `docs/02-prior-art.md` §Licensing.
