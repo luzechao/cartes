@@ -13,6 +13,9 @@ import {
   DirectionalLight,
   HemisphereLight,
   Float32BufferAttribute,
+  GridHelper,
+  Line,
+  LineBasicMaterial,
   PerspectiveCamera,
   Points,
   PointsMaterial,
@@ -109,6 +112,11 @@ export class Viewer {
   private readonly activeHandle = pointsOf(HANDLE_ACTIVE_COLOR, 15)
   private readonly marker = pointsOf(MARKER_COLORS.vertex, 17)
   private handlePoints: Vec3[] = []
+  private readonly sketch = new Line(
+    new BufferGeometry(),
+    new LineBasicMaterial({ color: HANDLE_ACTIVE_COLOR, depthTest: false, transparent: true }),
+  )
+  private readonly sketchPoints = pointsOf(HANDLE_COLOR, 9)
 
   constructor(
     private readonly canvas: HTMLCanvasElement,
@@ -131,6 +139,16 @@ export class Viewer {
     // Orbit and pan, no keyboard-modifier gymnastics: middle drag or two fingers to pan.
     this.controls.screenSpacePanning = true
     this.controls.addEventListener('change', this.requestRender)
+
+    // The ground plane at z = 0, for orientation and for drawing on. GridHelper lies in three's
+    // XZ plane, which is the model's XY plane after the root's Z-up → Y-up rotation.
+    const grid = new GridHelper(200, 200, 0xc8c8c4, 0xe2e2de)
+    grid.renderOrder = -1
+    this.scene.add(grid)
+
+    this.sketch.renderOrder = 11
+    this.sketch.frustumCulled = false
+    this.sketch.raycast = () => {}
 
     this.scene.add(new HemisphereLight(0xffffff, 0x606070, 2.2))
     const sun = new DirectionalLight(0xffffff, 1.1)
@@ -179,7 +197,7 @@ export class Viewer {
     this._selectedId = undefined
     this.build = build
     if (build) {
-      build.root.add(this.handles, this.activeHandle, this.marker)
+      build.root.add(this.handles, this.activeHandle, this.marker, this.sketch, this.sketchPoints)
       this.scene.add(build.root)
       const size = this.renderer.getDrawingBufferSize(new Vector2())
       build.materials.setResolution(size.x, size.y)
@@ -380,6 +398,23 @@ export class Viewer {
     this.requestRender()
   }
 
+  /**
+   * Show an outline being drawn: `points` joined in order, closed back to the first when
+   * `closed`. An empty list hides it.
+   */
+  setSketch(points: readonly Vec3[], closed = false): void {
+    const ring = closed && points.length > 2 ? [...points, points[0]!] : points
+    const flat: number[] = []
+    for (const v of ring) flat.push(v.x, v.y, v.z)
+    this.sketch.geometry.dispose()
+    const geometry = new BufferGeometry()
+    geometry.setAttribute('position', new Float32BufferAttribute(flat, 3))
+    this.sketch.geometry = geometry
+    this.sketch.visible = ring.length > 1
+    setPoints(this.sketchPoints, points)
+    this.requestRender()
+  }
+
   /** Orbit and pan off while a handle is being dragged, so the drag does not also turn the camera. */
   setNavigationEnabled(enabled: boolean): void {
     this.controls.enabled = enabled
@@ -413,7 +448,9 @@ export class Viewer {
     this.controls.removeEventListener('change', this.requestRender)
     this.controls.dispose()
     this.setBuild(undefined)
-    for (const p of [this.handles, this.activeHandle, this.marker]) {
+    this.sketch.geometry.dispose()
+    ;(this.sketch.material as LineBasicMaterial).dispose()
+    for (const p of [this.handles, this.activeHandle, this.marker, this.sketchPoints]) {
       p.geometry.dispose()
       ;(p.material as PointsMaterial).dispose()
     }

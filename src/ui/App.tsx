@@ -15,6 +15,8 @@ import {
   buildModel,
   buildReferenceIndex,
   EditHistory,
+  LATEST_IDD_VERSION,
+  newModelSource,
   setFieldValue,
   revertObject,
   revertAll,
@@ -25,6 +27,13 @@ import {
 import {
   applyMatchProposals,
   applyZoneTranslation,
+  buildSnapIndex,
+  extrudeZone,
+  placeOpening,
+  snapPoint,
+  suggestConstruction,
+  suggestInteriorConstructions,
+  surfaceExtent,
   DEFAULT_SNAP_SETTINGS,
   deleteVertex,
   DragSession,
@@ -41,6 +50,7 @@ import {
   validateModel,
   type DragMode,
   type MatchProposal,
+  type SnapIndex,
   type ResolvedSurface,
   type SnapSettings,
   type TwinOutcome,
@@ -52,6 +62,7 @@ import { ObjectTree } from './ObjectTree.js'
 import { Inspector } from './Inspector.js'
 import { DiffPanel } from './DiffPanel.js'
 import { MatchPanel } from './MatchPanel.js'
+import { useDialog } from './Dialog.js'
 
 interface LoadedFile {
   name: string
@@ -66,7 +77,14 @@ interface LoadedFile {
   history: EditHistory
 }
 
-type EditMode = 'off' | DragMode
+type EditMode = 'off' | DragMode | 'draw'
+
+/** A zone outline being drawn on a horizontal plane. */
+interface Sketch {
+  z: number
+  points: Array<{ x: number; y: number; z: number }>
+  index: SnapIndex
+}
 
 interface ActiveDrag {
   session: DragSession
@@ -154,6 +172,7 @@ export function App(): React.JSX.Element {
   const [snap, setSnap] = useState<SnapSettings>(DEFAULT_SNAP_SETTINGS)
   const [activeHandle, setActiveHandle] = useState<number | undefined>(undefined)
   const [notice, setNotice] = useState<string | undefined>(undefined)
+  const { ask, element: dialog } = useDialog()
 
   // Pointer and keyboard handlers outlive a render; they read the current state through these.
   const loadedRef = useRef<LoadedFile | undefined>(undefined)
@@ -161,6 +180,7 @@ export function App(): React.JSX.Element {
   const editModeRef = useRef<EditMode>('off')
   const activeHandleRef = useRef<number | undefined>(undefined)
   const dragRef = useRef<ActiveDrag | undefined>(undefined)
+  const sketchRef = useRef<Sketch | undefined>(undefined)
   const colorByRef = useRef<ColorBy>('type')
   const snapRef = useRef<SnapSettings>(DEFAULT_SNAP_SETTINGS)
   loadedRef.current = loaded
@@ -175,6 +195,8 @@ export function App(): React.JSX.Element {
     if (!canvas) return
     const viewer = new Viewer(canvas)
     viewerRef.current = viewer
+    // For end-to-end tests: project model points to the screen. Development builds only.
+    if (import.meta.env.DEV) (globalThis as { __cartesViewer?: Viewer }).__cartesViewer = viewer
     return () => {
       viewerRef.current = null
       viewer.dispose()
@@ -202,18 +224,18 @@ export function App(): React.JSX.Element {
     viewerRef.current?.setColorBy(colorBy)
   }, [colorBy])
 
-  const open = useCallback(async (file: File) => {
+  const load = useCallback((name: string, text: string) => {
     try {
       setError(undefined)
-      const text = await file.text()
       const started = performance.now()
       const doc = parseIdf(text)
       const model = buildModel(doc)
       const resolved = resolveModel(model)
       const validation = validateModel(model, resolved, doc)
       loadedRef.current?.history.detach()
+      sketchRef.current = undefined
       setLoaded({
-        name: file.name,
+        name,
         doc,
         model,
         resolved,
@@ -232,6 +254,21 @@ export function App(): React.JSX.Element {
       setError(cause instanceof Error ? cause.message : String(cause))
     }
   }, [])
+
+  const open = useCallback(
+    async (file: File) => {
+      load(file.name, await file.text())
+    },
+    [load],
+  )
+
+  /** Start from the authoring template, straight into drawing a zone. */
+  const newModel = useCallback(() => {
+    load('untitled.idf', newModelSource(LATEST_IDD_VERSION))
+    setEditMode('draw')
+    setSnap((s) => (s.grid ? s : { ...s, grid: true }))
+    setNotice('New model. Click on the ground to place the corners of a zone; double-click or press Enter to finish.')
+  }, [load])
 
   const onDrop = useCallback(
     (event: React.DragEvent) => {
@@ -305,7 +342,7 @@ export function App(): React.JSX.Element {
     const mode = editModeRef.current
     const selected = selectedRef.current
     const viewer = viewerRef.current
-    if (!current || !viewer || mode === 'off' || !selected || event.button !== 0) return
+    if (!current || !viewer || mode === 'off' || mode === 'draw' || !selected || event.button !== 0) return
 
     const handle = viewer.pickHandle(event.clientX, event.clientY)
     if (handle === undefined) return
@@ -336,6 +373,96 @@ export function App(): React.JSX.Element {
     ;(event.target as Element).setPointerCapture?.(event.pointerId)
   }, [])
 
+  /** Where the pointer meets the sketch plane, snapped to grid and to existing corners. */
+  const sketchPoint = useCallback((clientX: number, clientY: number) => {
+    const sketch = sketchRef.current
+    const ray = viewerRef.current?.rayAt(clientX, clientY)
+    if (!sketch || !ray) return undefined
+    const plane = { normal: { x: 0, y: 0, z: 1 }, constant: sketch.z }
+    const hit = intersectRayPlane(ray, plane)
+    return hit ? snapPoint(hit, sketch.index, snapRef.current, plane) : undefined
+  }, [])
+
+  const showSketch = useCallback((preview?: { x: number; y: number; z: number }) => {
+    const sketch = sketchRef.current
+    const viewer = viewerRef.current
+    if (!viewer) return
+    const pts = sketch ? [...sketch.points, ...(preview ? [preview] : [])] : []
+    viewer.setSketch(pts, pts.length > 2)
+  }, [])
+
+  const cancelSketch = useCallback(() => {
+    if (sketchRef.current) sketchRef.current.points = []
+    showSketch()
+    viewerRef.current?.setMarker(undefined)
+  }, [showSketch])
+
+  /** Turn the drawn outline into a zone: name and height asked for, constructions from the file. */
+  const finishSketch = useCallback(async () => {
+    const current = loadedRef.current
+    const sketch = sketchRef.current
+    if (!current || !sketch) return
+    if (sketch.points.length < 3) {
+      setNotice('A zone needs at least three corners.')
+      return
+    }
+    const { doc, model } = current
+    const constructions = {
+      wall: suggestConstruction(doc, model, 'exterior-wall'),
+      floor: suggestConstruction(doc, model, 'ground-floor'),
+      roof: suggestConstruction(doc, model, 'roof'),
+    }
+    const missing = Object.entries(constructions).filter(([, c]) => !c).map(([k]) => k)
+    if (missing.length > 0) {
+      setNotice(`No construction found for the new zone's ${missing.join(', ')} — add one to the file first, or start from New.`)
+      return
+    }
+    let n = model.zones.size + 1
+    while ([...model.zones.values()].some((z) => z.name.toLowerCase() === `zone ${n}`)) n++
+    const answer = await ask({
+      title: 'New zone',
+      message: [
+        `${sketch.points.length} corners${sketch.z !== 0 ? `, floor at ${+sketch.z.toFixed(3)} m` : ' on the ground'}.`,
+        `Walls ${constructions.wall}, floor ${constructions.floor}, roof ${constructions.roof} — the file's own, where it has them.`,
+      ],
+      fields: [
+        { key: 'name', label: 'Name', value: `Zone ${n}` },
+        { key: 'height', label: 'Height (m)', value: '3', kind: 'number' },
+      ],
+      confirmLabel: 'Create zone',
+    })
+    if (!answer) return
+    const name = answer['name']!
+    const result = extrudeZone(doc, model, {
+      zoneName: name,
+      footprint: sketch.points,
+      baseZ: sketch.z,
+      height: Number(answer['height']),
+      constructions: constructions as { wall: string; floor: string; roof: string },
+    })
+    if (result.refused) {
+      setNotice(`Cannot create the zone: ${result.refused}.`)
+      return
+    }
+    cancelSketch()
+    commit({ rebuild: true })
+    const after = loadedRef.current!
+    const created = new Set(result.created)
+    const pairs = proposeMatches(after.doc, after.model, after.resolved, undefined, {
+      interiorConstructions: suggestInteriorConstructions(after.doc, after.model),
+    }).proposals.filter((p) => created.has(p.a) || created.has(p.b))
+    if (pairs.length > 0) {
+      setRightTab('matching')
+      setShowRightPanel(true)
+    }
+    setNotice(
+      `Created zone '${name}' with ${result.created.length - 1} surfaces.` +
+        (pairs.length > 0
+          ? ` ${pairs.length} of its surfaces meet a neighbour — review the proposed pairs under Matching.`
+          : ' Draw another, or select a wall to add windows.'),
+    )
+  }, [ask, cancelSketch, commit])
+
   const onPointerDown = useCallback((event: React.PointerEvent) => {
     if (dragRef.current) return
     pointerDownRef.current = { x: event.clientX, y: event.clientY }
@@ -350,6 +477,24 @@ export function App(): React.JSX.Element {
       const down = pointerDownRef.current
       if (!down) return
       if (Math.hypot(event.clientX - down.x, event.clientY - down.y) < 4) {
+        if (editModeRef.current === 'draw') {
+          const sketch = sketchRef.current
+          const p = sketchPoint(event.clientX, event.clientY)
+          if (!sketch || !p) return
+          const first = sketch.points[0]
+          const screenFirst = first && viewerRef.current?.toClient(first)
+          if (
+            sketch.points.length >= 3 &&
+            screenFirst &&
+            Math.hypot(screenFirst.x - event.clientX, screenFirst.y - event.clientY) <= EDGE_PICK_PX
+          ) {
+            finishSketch()
+            return
+          }
+          sketch.points.push(p.point)
+          showSketch()
+          return
+        }
         const viewer = viewerRef.current
         const selected = selectedRef.current
         const outline = selected ? loadedRef.current?.resolved.get(selected) : undefined
@@ -371,13 +516,19 @@ export function App(): React.JSX.Element {
         }
       }
     },
-    [endDrag],
+    [endDrag, finishSketch, showSketch, sketchPoint],
   )
 
   const onPointerMove = useCallback((event: React.PointerEvent) => {
     const drag = dragRef.current
     const current = loadedRef.current
     const viewer = viewerRef.current
+    if (editModeRef.current === 'draw' && viewer && sketchRef.current) {
+      const p = sketchPoint(event.clientX, event.clientY)
+      showSketch(p?.point)
+      viewer.setMarker(p && p.kind !== 'none' ? p.point : undefined, p && p.kind !== 'none' ? p.kind : undefined)
+      return
+    }
     if (!drag || !current || !viewer) {
       setHover(viewer?.pick(event.clientX, event.clientY))
       return
@@ -395,7 +546,7 @@ export function App(): React.JSX.Element {
     const selected = selectedRef.current
     viewer.setHandles((selected && drag.resolved.get(selected)?.worldVertices) || [], drag.handle)
     viewer.setMarker(update.snap.kind === 'none' ? undefined : update.point, update.snap.kind === 'none' ? undefined : update.snap.kind)
-  }, [])
+  }, [showSketch, sketchPoint])
 
   /** Double-click on an edge of the selected surface: split it there. */
   const onDoubleClick = useCallback(
@@ -403,6 +554,10 @@ export function App(): React.JSX.Element {
       const current = loadedRef.current
       const viewer = viewerRef.current
       const selected = selectedRef.current
+      if (editModeRef.current === 'draw') {
+        finishSketch()
+        return
+      }
       if (!current || !viewer || editModeRef.current !== 'vertex' || !selected) return
       const r = current.resolved.get(selected)
       const plane = r && planeOfSurface(r)
@@ -425,7 +580,7 @@ export function App(): React.JSX.Element {
       )
       setActiveHandle(index === -1 ? undefined : index)
     },
-    [commit],
+    [commit, finishSketch],
   )
 
   const undo = useCallback(() => {
@@ -449,7 +604,7 @@ export function App(): React.JSX.Element {
   }, [commit])
 
   /** Delete the active vertex, or — with no vertex active — the selected surface. */
-  const deleteSelection = useCallback(() => {
+  const deleteSelection = useCallback(async () => {
     const current = loadedRef.current
     const selected = selectedRef.current
     if (!current || !selected || dragRef.current) return
@@ -470,38 +625,44 @@ export function App(): React.JSX.Element {
 
     const plan = planSurfaceDeletion(doc, model, buildReferenceIndex(doc, model.version), selected)
     if (!plan) return
-    const lines = [`Delete ${plan.className} '${plan.surfaceName}'?`]
+    const lines: string[] = []
     if (plan.cascade.length > 0) {
-      lines.push('', 'Also deleted, because they cannot exist without it:')
-      for (const c of plan.cascade) lines.push(`  • ${c.className} '${c.name}'`)
+      lines.push('Also deleted, because they cannot exist without it:')
+      for (const c of plan.cascade) lines.push(`• ${c.className} '${c.name}'`)
     }
     const others = [...plan.otherReferences, ...plan.undeclaredMentions]
     if (others.length > 0) {
-      lines.push('', `${others.length} other field(s) name it and will be left dangling:`)
-      for (const r of others.slice(0, 8)) lines.push(`  • ${doc.objects.get(r.fromId)?.className ?? r.fromClassKey}: ${r.fieldName}`)
+      lines.push(`${others.length} other field(s) name it and will be left dangling:`)
+      for (const r of others.slice(0, 8)) lines.push(`• ${doc.objects.get(r.fromId)?.className ?? r.fromClassKey}: ${r.fieldName}`)
     }
-    if (!window.confirm(lines.join('\n'))) return
-
-    let twins: 'leave' | 'adiabatic' = 'leave'
     if (plan.twins.length > 0) {
-      twins = window.confirm(
+      lines.push(
         `${plan.twins.map((t) => `'${t.name}'`).join(', ')} name${plan.twins.length === 1 ? 's' : ''} this surface as ` +
-          'its interzone twin. EnergyPlus will not run while that reference dangles.\n\n' +
-          'OK: set the twin to Adiabatic.  Cancel: leave it for you to fix.',
+          'its interzone twin. EnergyPlus will not run while that reference dangles.',
       )
-        ? 'adiabatic'
-        : 'leave'
     }
+    const answer = await ask({
+      title: `Delete ${plan.className} '${plan.surfaceName}'?`,
+      message: lines,
+      fields:
+        plan.twins.length > 0
+          ? [{ key: 'adiabatic', label: 'Set the twin to Adiabatic', value: 'false', kind: 'checkbox', hint: 'otherwise it is left for you to fix' }]
+          : [],
+      confirmLabel: 'Delete',
+      danger: true,
+    })
+    if (!answer) return
+    const twins: 'leave' | 'adiabatic' = answer['adiabatic'] === 'true' ? 'adiabatic' : 'leave'
     const result = applySurfaceDeletion(doc, model, plan, { twins })
     setNotice(
       `Deleted ${result.deleted.length} object${result.deleted.length === 1 ? '' : 's'}` +
         (result.repairedTwins.length > 0 ? `; ${result.repairedTwins.length} twin set to Adiabatic.` : '.'),
     )
     commit({ rebuild: true })
-  }, [commit])
+  }, [ask, commit])
 
   /** Move the selected surface's whole zone by a typed offset. */
-  const moveZone = useCallback(() => {
+  const moveZone = useCallback(async () => {
     const current = loadedRef.current
     const selected = selectedRef.current
     if (!current || !selected) return
@@ -511,14 +672,22 @@ export function App(): React.JSX.Element {
       setNotice('The selected surface belongs to no zone.')
       return
     }
-    const answer = window.prompt(`Move zone '${zone.name}' by dx, dy, dz (metres, world axes):`, '0, 0, 0')
-    if (answer === null) return
-    const parts = answer.split(/[\s,]+/).filter(Boolean).map(Number)
-    if (parts.length !== 3 || parts.some((n) => !Number.isFinite(n))) {
-      setNotice('Enter three numbers: dx, dy, dz.')
+    const answer = await ask({
+      title: `Move zone '${zone.name}'`,
+      message: ['By an offset in metres, along the world axes.'],
+      fields: [
+        { key: 'x', label: 'dx', value: '0', kind: 'number' },
+        { key: 'y', label: 'dy', value: '0', kind: 'number' },
+        { key: 'z', label: 'dz', value: '0', kind: 'number' },
+      ],
+      confirmLabel: 'Move',
+    })
+    if (!answer) return
+    const [x, y, z] = ['x', 'y', 'z'].map((k) => Number(answer[k])) as [number, number, number]
+    if (![x, y, z].every(Number.isFinite)) {
+      setNotice('Enter a number for each of dx, dy and dz.')
       return
     }
-    const [x, y, z] = parts as [number, number, number]
     const plan = planZoneTranslation(current.doc, current.model, zoneId, { x, y, z })
     if (!plan) return
     const warnings: string[] = []
@@ -530,15 +699,16 @@ export function App(): React.JSX.Element {
       warnings.push(`${plan.leftBehind.length} object(s) will be left behind: ` +
         plan.leftBehind.map((l) => `${l.name} (${l.reason})`).join('; '))
     }
-    if (warnings.length > 0 && !window.confirm(`${warnings.join('\n\n')}\n\nMove the zone anyway?`)) return
+    if (warnings.length > 0 && !(await ask({ title: 'Move the zone anyway?', message: warnings, confirmLabel: 'Move' }))) return
     const result = applyZoneTranslation(current.doc, current.model, plan)
     setNotice(`Moved zone '${zone.name}' — ${result.dirtied.length} object${result.dirtied.length === 1 ? '' : 's'} changed.`)
     commit({ rebuild: true })
-  }, [commit])
+  }, [ask, commit])
 
   useEffect(() => {
     const onKey = (event: KeyboardEvent): void => {
       if (isTyping(event.target)) return
+      if ((event.target as HTMLElement | null)?.closest?.('.dialog-backdrop')) return
       const mod = event.metaKey || event.ctrlKey
       const key = event.key.toLowerCase()
       if (mod && key === 'z') {
@@ -548,6 +718,17 @@ export function App(): React.JSX.Element {
       } else if (mod && key === 'y') {
         event.preventDefault()
         redo()
+      } else if (editModeRef.current === 'draw' && sketchRef.current) {
+        if (key === 'enter') {
+          event.preventDefault()
+          finishSketch()
+        } else if (key === 'escape') {
+          cancelSketch()
+        } else if (key === 'backspace' || key === 'delete') {
+          event.preventDefault()
+          sketchRef.current.points.pop()
+          showSketch()
+        }
       } else if ((key === 'delete' || key === 'backspace') && editModeRef.current !== 'off') {
         event.preventDefault()
         deleteSelection()
@@ -557,13 +738,34 @@ export function App(): React.JSX.Element {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [undo, redo, deleteSelection])
+  }, [undo, redo, deleteSelection, finishSketch, cancelSketch, showSketch])
+
+  // Entering draw mode fixes the sketch plane: on top of a selected roof or floor, else the ground.
+  useEffect(() => {
+    const viewer = viewerRef.current
+    if (editMode !== 'draw' || !loaded) {
+      if (sketchRef.current) {
+        sketchRef.current = undefined
+        viewer?.setSketch([])
+        viewer?.setMarker(undefined)
+      }
+      return
+    }
+    if (sketchRef.current) {
+      // Geometry changed under an open sketch: keep the corners, refresh what they snap to.
+      sketchRef.current.index = buildSnapIndex(loaded.resolved)
+      return
+    }
+    const sel = selectedId ? loaded.resolved.get(selectedId) : undefined
+    const z = sel && Math.abs(sel.normal.z) > 0.999 ? sel.centroid.z : 0
+    sketchRef.current = { z, points: [], index: buildSnapIndex(loaded.resolved) }
+  }, [editMode, loaded, selectedId])
 
   // Vertex handles follow the selection in edit mode.
   useEffect(() => {
     const viewer = viewerRef.current
     if (!viewer || dragRef.current) return
-    const r = editMode !== 'off' && selectedId ? loaded?.resolved.get(selectedId) : undefined
+    const r = editMode !== 'off' && editMode !== 'draw' && selectedId ? loaded?.resolved.get(selectedId) : undefined
     viewer.setHandles(r?.worldVertices ?? [], activeHandle)
   }, [loaded, selectedId, editMode, activeHandle])
 
@@ -614,9 +816,75 @@ export function App(): React.JSX.Element {
     commit({ rebuild: true })
   }, [commit])
 
-  // Tens of milliseconds on the largest corpus file, so it simply follows every edit.
+  /** Put a window or door on the selected wall, roof or floor, sized by prompt. */
+  const addOpening = useCallback(
+    async (type: 'Window' | 'Door') => {
+      const current = loadedRef.current
+      const selected = selectedRef.current
+      const base = selected ? current?.model.surfaces.get(selected) : undefined
+      if (!current || !selected || !base || base.kind !== 'base') {
+        setNotice('Select a wall, roof or floor first.')
+        return
+      }
+      const construction = suggestConstruction(current.doc, current.model, type === 'Window' ? 'window' : 'door')
+      if (!construction) {
+        setNotice(`No ${type.toLowerCase()} construction found in the file — add one first, or start from New.`)
+        return
+      }
+      const extent = surfaceExtent(current.resolved.get(selected)!)
+      const r1 = (v: number): number => Math.round(v * 10) / 10
+      const defaults =
+        type === 'Door'
+          ? [0.9, Math.min(2.1, r1(extent.height - 0.1)), 0]
+          : [r1(Math.min(extent.width * 0.5, 3)), r1(Math.min(1.5, extent.height * 0.5)), r1(Math.min(0.9, extent.height * 0.3))]
+      const answer = await ask({
+        title: `Add a ${type.toLowerCase()} to ${base.name}`,
+        message: [`The surface is ${r1(extent.width)} m wide and ${r1(extent.height)} m high. Construction: ${construction}.`],
+        fields: [
+          { key: 'width', label: 'Width (m)', value: String(defaults[0]), kind: 'number' },
+          { key: 'height', label: 'Height (m)', value: String(defaults[1]), kind: 'number' },
+          { key: 'sill', label: type === 'Door' ? 'Above the floor (m)' : 'Sill height (m)', value: String(defaults[2]), kind: 'number' },
+          { key: 'offset', label: 'From the left edge (m)', value: '', kind: 'number', hint: 'blank to centre it' },
+        ],
+        confirmLabel: `Add ${type.toLowerCase()}`,
+      })
+      if (!answer) return
+      const [width, height, sill] = ['width', 'height', 'sill'].map((k) => Number(answer[k])) as [number, number, number]
+      if (![width, height, sill].every(Number.isFinite)) {
+        setNotice('Enter a number for width, height and sill.')
+        return
+      }
+      const offsetText = answer['offset']!.trim()
+      const result = placeOpening(current.doc, current.model, selected, {
+        surfaceType: type,
+        construction,
+        width,
+        height,
+        sill,
+        ...(offsetText === '' ? {} : { offset: Number(offsetText) }),
+      })
+      if (result.refused) {
+        setNotice(`Cannot add the ${type.toLowerCase()}: ${result.refused}.`)
+        return
+      }
+      setNotice(
+        `Added a ${type.toLowerCase()} to ${base.name}` +
+          (result.twinId ? ', and its matching opening on the interzone twin.' : '.'),
+      )
+      commit({ rebuild: true })
+    },
+    [ask, commit],
+  )
+
+  // Tens of milliseconds on the largest corpus file, so it simply follows every edit. Pairs the
+  // matcher proposes between formerly exterior faces take the file's interior constructions.
   const matchReport = useMemo(
-    () => (loaded ? proposeMatches(loaded.doc, loaded.model, loaded.resolved) : undefined),
+    () =>
+      loaded
+        ? proposeMatches(loaded.doc, loaded.model, loaded.resolved, undefined, {
+            interiorConstructions: suggestInteriorConstructions(loaded.doc, loaded.model),
+          })
+        : undefined,
     [loaded],
   )
 
@@ -660,6 +928,9 @@ export function App(): React.JSX.Element {
     >
       <header className="bar">
         <strong>cartes</strong>
+        <button type="button" onClick={newModel} title="Start a new model from the authoring template">
+          New
+        </button>
         <label className="file">
           Open IDF
           <input
@@ -754,7 +1025,7 @@ export function App(): React.JSX.Element {
         {loaded && (
           <>
             <span className="bar__group" role="group" aria-label="Edit geometry">
-              {(['off', 'vertex', 'corner'] as const).map((mode) => (
+              {(['off', 'vertex', 'corner', 'draw'] as const).map((mode) => (
                 <button
                   key={mode}
                   type="button"
@@ -762,12 +1033,16 @@ export function App(): React.JSX.Element {
                   onClick={() => {
                     setEditMode(mode)
                     setActiveHandle(undefined)
+                    // Drawing without a grid means corners at 3.0417 m; with one, at 3.0 m.
+                    if (mode === 'draw' && !snap.grid) setSnap({ ...snap, grid: true })
                     setNotice(
                       mode === 'vertex'
                         ? 'Select a surface, then drag a handle within its plane. Double-click an edge to add a vertex; Delete removes the active vertex, or the surface.'
                         : mode === 'corner'
                           ? 'Select a surface, then drag a corner in plan: everything on that vertical edge moves together.'
-                          : undefined,
+                          : mode === 'draw'
+                            ? 'Click to place the corners of a new zone — on the ground, or on top of a selected roof. Double-click, Enter, or click the first corner to finish; Backspace removes a corner; Esc cancels.'
+                            : undefined,
                     )
                   }}
                   title={
@@ -775,10 +1050,12 @@ export function App(): React.JSX.Element {
                       ? 'Select and inspect only'
                       : mode === 'vertex'
                         ? 'Drag vertices within their surface plane'
-                        : 'Drag building corners in plan'
+                        : mode === 'corner'
+                          ? 'Drag building corners in plan'
+                          : 'Draw a zone footprint and extrude it'
                   }
                 >
-                  {mode === 'off' ? 'Select' : mode === 'vertex' ? 'Vertex' : 'Corner'}
+                  {mode === 'off' ? 'Select' : mode === 'vertex' ? 'Vertex' : mode === 'corner' ? 'Corner' : 'Draw zone'}
                 </button>
               ))}
             </span>
@@ -812,7 +1089,18 @@ export function App(): React.JSX.Element {
               </span>
             )}
 
-            {editMode !== 'off' && selectedId && loaded.model.surfaces.has(selectedId) && (
+            {selectedId && loaded.model.surfaces.get(selectedId)?.kind === 'base' && (
+              <>
+                <button type="button" onClick={() => addOpening('Window')} title="Add a window to the selected surface">
+                  + Window
+                </button>
+                <button type="button" onClick={() => addOpening('Door')} title="Add a door to the selected surface">
+                  + Door
+                </button>
+              </>
+            )}
+
+            {editMode !== 'off' && editMode !== 'draw' && selectedId && loaded.model.surfaces.has(selectedId) && (
               <>
                 <button type="button" onClick={moveZone} title="Translate the selected surface's zone">
                   Move zone…
@@ -908,7 +1196,7 @@ export function App(): React.JSX.Element {
                   </p>
                 </>
               ) : (
-                <p>This file contains no surface geometry.</p>
+                <p>No geometry yet. Choose <strong>Draw zone</strong> and click on the ground to start.</p>
               )}
             </div>
           )}
@@ -1043,6 +1331,8 @@ export function App(): React.JSX.Element {
           </aside>
         )}
       </div>
+
+      {dialog}
 
       {/* Live Diff / Raw IDF Modal */}
       {loaded && showDiff && (

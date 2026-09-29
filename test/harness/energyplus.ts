@@ -65,6 +65,39 @@ export interface EnergyPlusRun {
   warningCount: number
   /** Raw `.err` text, for reporting a failure usefully. */
   err: string
+  /**
+   * Raw `.eio` text: EnergyPlus's own report of what it built from the input, including each
+   * zone's floor area and volume. Empty when the run stopped before writing it.
+   */
+  eio: string
+}
+
+export interface ZoneInfo {
+  name: string
+  floorArea: number
+  volume: number
+}
+
+/**
+ * The `Zone Information` records from an `.eio` file.
+ *
+ * The header line names the columns, so they are found by name rather than by position — the
+ * record has grown columns across EnergyPlus releases.
+ */
+export function zoneInfo(eio: string): ZoneInfo[] {
+  const lines = eio.split(/\r?\n/)
+  const header = lines.find((l) => l.startsWith('! <Zone Information>'))
+  if (!header) return []
+  const cols = header.split(',').map((c) => c.trim().toLowerCase())
+  const iName = 1
+  const iArea = cols.findIndex((c) => c.startsWith('floor area'))
+  const iVolume = cols.findIndex((c) => c.startsWith('volume'))
+  return lines
+    .filter((l) => l.startsWith(' Zone Information,'))
+    .map((l) => {
+      const f = l.split(',').map((x) => x.trim())
+      return { name: f[iName]!, floorArea: Number(f[iArea]), volume: Number(f[iVolume]) }
+    })
 }
 
 const SEVERE = /^\s*\*\*\s*Severe\s*\*\*\s*(.*)$/
@@ -149,11 +182,14 @@ export function runEnergyPlus(
   // Prefix `base` plus the default legacy suffix style yields `baseout.err`.
   const errPath = join(dir, 'baseout.err')
   const err = existsSync(errPath) ? readFileSync(errPath, 'utf8') : ''
+  const eioPath = join(dir, 'baseout.eio')
+  const eio = existsSync(eioPath) ? readFileSync(eioPath, 'utf8') : ''
 
   return {
     completed: /Completed Successfully/.test(err),
     exitCode,
     err,
+    eio,
     ...parseErr(err),
   }
 }

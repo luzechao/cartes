@@ -33,6 +33,7 @@ export type ValidationRuleCode =
   | 'surface-inverted-normal'
   | 'exposure-inconsistent'
   | 'zone-no-floor'
+  | 'zone-not-enclosed'
   | 'dangling-reference'
   | 'dangling-construction-reference'
 
@@ -215,6 +216,110 @@ export const PLANARITY_TOLERANCE = 0.01
 
 /** Maximum reveal setback considered parallel warning rather than coplanar error: 0.35 m (~14 inches). */
 export const MAX_REVEAL_SETBACK = 0.35
+
+const UPSIDE_DOWN = 1e-6
+
+/** E+ `CalculateZoneVolume` builds the zone polyhedron from these surface classes only. */
+const ENCLOSING_TYPES = new Set(['wall', 'floor', 'roof', 'ceiling'])
+
+/** EnergyPlus's `Constant::OneCentimeter`, the tolerance of every enclosure comparison. */
+const ENCLOSURE_TOL = 0.01
+
+function fmtPt(p: Vec3): string {
+  return `(${+p.x.toFixed(2)}, ${+p.y.toFixed(2)}, ${+p.z.toFixed(2)})`
+}
+
+function almostEqual(a: Vec3, b: Vec3): boolean {
+  return (
+    Math.abs(a.x - b.x) < ENCLOSURE_TOL && Math.abs(a.y - b.y) < ENCLOSURE_TOL && Math.abs(a.z - b.z) < ENCLOSURE_TOL
+  )
+}
+
+function dist(a: Vec3, b: Vec3): number {
+  return Math.hypot(a.x - b.x, a.y - b.y, a.z - b.z)
+}
+
+/** EnergyPlus's `isPointOnLineBetweenPoints`: within 1 cm of the line, and between the ends. */
+function onSegment(s: Vec3, e: Vec3, t: Vec3): boolean {
+  const len = dist(s, e)
+  if (len === 0) return false
+  const d = { x: (e.x - s.x) / len, y: (e.y - s.y) / len, z: (e.z - s.z) / len }
+  const o = { x: t.x - s.x, y: t.y - s.y, z: t.z - s.z }
+  const c = { x: d.y * o.z - d.z * o.y, y: d.z * o.x - d.x * o.z, z: d.x * o.y - d.y * o.x }
+  if (Math.hypot(c.x, c.y, c.z) >= ENCLOSURE_TOL) return false
+  return Math.abs(len - (dist(s, t) + dist(t, e))) < ENCLOSURE_TOL
+}
+
+export interface OpenEdge {
+  a: Vec3
+  b: Vec3
+  /** How many faces use this edge. An enclosed zone uses every edge exactly twice. */
+  count: number
+  /** Index of the first face using it. */
+  face: number
+}
+
+function edgesNotTwo(faces: readonly Vec3[][], unique: readonly Vec3[]): OpenEdge[] {
+  const indexOf = (p: Vec3): number => unique.findIndex((u) => almostEqual(u, p))
+  const edges = new Map<string, OpenEdge>()
+  faces.forEach((ring, f) => {
+    for (let j = 0; j < ring.length; j++) {
+      const a = indexOf(ring[(j - 1 + ring.length) % ring.length]!)
+      const b = indexOf(ring[j]!)
+      const key = a < b ? `${a},${b}` : `${b},${a}`
+      const e = edges.get(key)
+      if (e) e.count++
+      else edges.set(key, { a: unique[a]!, b: unique[b]!, count: 1, face: f })
+    }
+  })
+  return [...edges.values()].filter((e) => e.count !== 2)
+}
+
+/**
+ * Edges of a set of faces not shared by exactly two of them — EnergyPlus's
+ * `isEnclosedVolume`, transcribed.
+ *
+ * Vertices are merged at 1 cm per axis, in first-seen order. When the first count finds open
+ * edges, every face has any other face's vertex lying on one of its edges inserted there — the
+ * T-junction where two collinear walls meet under one long floor edge — and the count is redone.
+ * The zone is enclosed exactly when either pass finds nothing open — the same decision
+ * EnergyPlus makes. For the report, edges open in *both* passes are preferred, as EnergyPlus
+ * lists them; when there are none (every open edge is one the repair pass created), the second
+ * pass's edges are returned instead, so a non-empty result always means "not enclosed".
+ */
+export function openEdges(faces: readonly Vec3[][]): OpenEdge[] {
+  const unique: Vec3[] = []
+  for (const ring of faces) for (const p of ring) if (!unique.some((u) => almostEqual(u, p))) unique.push(p)
+
+  const first = edgesNotTwo(faces, unique)
+  if (first.length === 0) return []
+
+  const updated = faces.map((ring) => {
+    const out = [...ring]
+    let inserted = true
+    while (inserted) {
+      inserted = false
+      for (let i = 0; i < out.length && !inserted; i++) {
+        const cur = out[i]!
+        const next = out[(i + 1) % out.length]!
+        for (const t of unique) {
+          if (!almostEqual(cur, t) && !almostEqual(next, t) && onSegment(cur, next, t)) {
+            out.splice(i + 1, 0, t)
+            inserted = true
+            break
+          }
+        }
+      }
+    }
+    return out
+  })
+  const again = edgesNotTwo(updated, unique)
+  if (again.length === 0) return []
+  const same = (x: OpenEdge, y: OpenEdge): boolean =>
+    (almostEqual(x.a, y.a) && almostEqual(x.b, y.b)) || (almostEqual(x.a, y.b) && almostEqual(x.b, y.a))
+  const inBoth = first.filter((e) => again.some((g) => same(e, g)))
+  return inBoth.length > 0 ? inBoth : again
+}
 
 export function validateModel(
   model: Model,
@@ -445,24 +550,28 @@ export function validateModel(
         }
       }
 
-      // Normal orientation for exterior surfaces
-      if (obc === 'outdoors' && geo) {
+      // Upside-down floors and roofs — EnergyPlus's `GetVertices` test, whatever the boundary
+      // condition: a floor whose normal has any upward component, or a roof or ceiling with any
+      // downward one, at 1e-6 on the unit normal. EnergyPlus reverses the surface and warns. The
+      // first version of this rule looked only at `Outdoors` surfaces, with a 0.1 threshold, and
+      // so missed an upside-down ground floor that EnergyPlus reported.
+      if (geo) {
         const type = surface.surfaceType.toLowerCase()
-        if (type === 'roof' && geo.normal.z < -0.1) {
+        if ((type === 'roof' || type === 'ceiling') && geo.normal.z < -UPSIDE_DOWN) {
           report(
             'warning',
             'surface-inverted-normal',
-            `Exterior roof normal points downward (Z = ${geo.normal.z.toFixed(2)}).`,
+            `${surface.surfaceType} faces downward (normal Z = ${geo.normal.z.toFixed(2)}); EnergyPlus will reverse it.`,
             surface,
-            { fixDescription: 'Reverse vertex order to orient normal upward.' },
+            { fixDescription: 'Reverse vertex order so the normal points up, out of the zone.' },
           )
-        } else if (type === 'floor' && geo.normal.z > 0.1) {
+        } else if (type === 'floor' && geo.normal.z > UPSIDE_DOWN) {
           report(
             'warning',
             'surface-inverted-normal',
-            `Exterior floor normal points upward (Z = ${geo.normal.z.toFixed(2)}).`,
+            `Floor faces upward (normal Z = ${geo.normal.z.toFixed(2)}); EnergyPlus will reverse it.`,
             surface,
-            { fixDescription: 'Reverse vertex order to orient normal downward.' },
+            { fixDescription: 'Reverse vertex order so the normal points down, out of the zone.' },
           )
         }
       }
@@ -596,6 +705,28 @@ export function validateModel(
     }
   }
 
+  // Surfaces with `Outside Boundary Condition = Zone` (or `Space`) get a reversed twin created
+  // by EnergyPlus inside the named zone. Measured: without these, a return plenum whose floor is
+  // made entirely of the ceilings below it — `ASHRAE901_OfficeLarge…`, and two other corpus
+  // files — reads as open, while EnergyPlus correctly finds it enclosed.
+  const autoTwins = new Map<string, Vec3[][]>()
+  for (const s of model.surfaces.values()) {
+    if (s.kind !== 'base' || !ENCLOSING_TYPES.has(s.surfaceType.trim().toLowerCase())) continue
+    const bc = s.outsideBoundaryCondition.trim().toLowerCase()
+    if (bc !== 'zone' && bc !== 'space') continue
+    let target = lookupInClass(model.names, 'zone', s.outsideBoundaryConditionObject)
+    if (target === undefined && bc === 'space') {
+      const spaceId = lookupInClass(model.names, 'space', s.outsideBoundaryConditionObject)
+      const space = spaceId === undefined ? undefined : model.spaces.get(spaceId)
+      if (space) target = lookupInClass(model.names, 'zone', space.zoneName)
+    }
+    const g = resolved.get(s.id)
+    if (target === undefined || !g || g.worldVertices.length < 3) continue
+    const list = autoTwins.get(target) ?? []
+    list.push([...g.worldVertices].reverse())
+    autoTwins.set(target, list)
+  }
+
   // 3. Zone-level checks
   for (const [zid, zone] of model.zones) {
     const sids: string[] = []
@@ -619,6 +750,38 @@ export function validateModel(
           message: `Zone "${zone.name}" has no floor surface defined.`,
           objectId: zid,
           objectName: zone.name,
+        })
+      }
+
+      const faces: Array<{ id: string; ring: Vec3[] }> = []
+      for (const sid of sids) {
+        const s = model.surfaces.get(sid)
+        const g = resolved.get(sid)
+        if (!s || s.kind !== 'base' || !g || g.worldVertices.length < 3) continue
+        if (!ENCLOSING_TYPES.has(s.surfaceType.trim().toLowerCase())) continue
+        faces.push({ id: sid, ring: g.worldVertices })
+      }
+      const twins = autoTwins.get(zid) ?? []
+      const open = faces.length > 0 ? openEdges([...faces.map((f) => f.ring), ...twins]) : []
+      if (open.length > 0) {
+        const own = open.filter((e) => e.face < faces.length)
+        const first = faces[(own[0] ?? open[0]!).face] ?? faces[0]!
+        const where = open
+          .slice(0, 3)
+          .map((e) => `${model.surfaces.get(faces[e.face]?.id ?? '')?.name ?? '(auto-created twin)'} ${fmtPt(e.a)}–${fmtPt(e.b)} (${e.count}×)`)
+          .join('; ')
+        issues.push({
+          severity: 'warning',
+          code: 'zone-not-enclosed',
+          message:
+            `Zone "${zone.name}" is not fully enclosed: ${open.length} edge${open.length === 1 ? ' is' : 's are'} ` +
+            `not shared by exactly two of its walls, floors and roofs — ${where}${open.length > 3 ? ', …' : ''}. ` +
+            'EnergyPlus will warn and fall back to an approximate volume.',
+          objectId: first.id,
+          objectName: model.surfaces.get(first.id)?.name ?? '',
+          relatedObjectId: zid,
+          relatedObjectName: zone.name,
+          fixDescription: 'Make every edge of the zone meet exactly one other surface edge — snap corners together, or split long edges where neighbours meet them.',
         })
       }
     }

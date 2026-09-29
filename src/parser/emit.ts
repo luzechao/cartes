@@ -342,6 +342,32 @@ function gapText(doc: IdfDocument, from: number, to: number): string {
 export function emitIdf(doc: IdfDocument, options: EmitOptions = {}): string {
   const out: string[] = []
   let cursor = 0
+  // Objects with no source span (created after parsing) wait here until the next gap, so they
+  // can be placed on lines of their own rather than glued to the end of the previous object.
+  let pending: string[] = []
+
+  const flush = (gap: string): void => {
+    if (pending.length === 0) {
+      if (gap !== '') out.push(gap)
+      return
+    }
+    // Split the gap after the line break that ends the previous object: new objects go after
+    // it, each preceded by a blank line, and the rest of the gap (blank lines, comments,
+    // indentation) stays in front of whatever follows.
+    const nl = gap.indexOf('\n')
+    const head = nl === -1 ? '' : gap.slice(0, nl + 1)
+    const rest = nl === -1 ? gap : gap.slice(nl + 1)
+    if (head !== '') out.push(head)
+    const atStart = out.length === 0
+    const last = out[out.length - 1]
+    if (!atStart && last !== undefined && !last.endsWith('\n')) out.push('\n')
+    pending.forEach((text, i) => {
+      if (!(atStart && i === 0)) out.push('\n')
+      out.push(text)
+    })
+    pending = []
+    if (rest !== '') out.push(rest)
+  }
 
   for (const id of doc.order) {
     const obj = doc.objects.get(id)
@@ -349,25 +375,26 @@ export function emitIdf(doc: IdfDocument, options: EmitOptions = {}): string {
 
     const hasSpan = obj.start !== null && obj.end !== null
 
-    if (hasSpan) {
-      // Emit the gap between the previous object and this one, verbatim.
-      if (obj.start! > cursor) out.push(gapText(doc, cursor, obj.start!))
-      else if (obj.start! < cursor) {
-        // Reordered relative to the source; the preceding gap has already been consumed.
-      }
+    if (!hasSpan) {
+      pending.push(renderObject(obj, options, doc.source))
+      continue
     }
 
-    if (obj.dirty || !hasSpan) {
+    // Emit the gap between the previous object and this one, verbatim. An object reordered
+    // before the cursor has had its preceding gap consumed already.
+    flush(obj.start! > cursor ? gapText(doc, cursor, obj.start!) : '')
+
+    if (obj.dirty) {
       out.push(renderObject(obj, options, doc.source))
     } else {
       out.push(doc.source.slice(obj.start!, obj.end!))
     }
 
-    if (hasSpan) cursor = Math.max(cursor, obj.end!)
+    cursor = Math.max(cursor, obj.end!)
   }
 
   // Trailing gap: comments or whitespace after the final object.
-  if (cursor < doc.source.length) out.push(gapText(doc, cursor, doc.source.length))
+  flush(cursor < doc.source.length ? gapText(doc, cursor, doc.source.length) : '')
 
   return out.join('')
 }

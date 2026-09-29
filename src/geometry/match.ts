@@ -410,6 +410,77 @@ function subSurfaceChanges(
   return changes
 }
 
+export interface InteriorConstructions {
+  wall?: string
+  /** For the floor side of a floor/ceiling pair. */
+  floor?: string
+  /** For the ceiling (or roof) side of a floor/ceiling pair. */
+  ceiling?: string
+}
+
+export interface ProposeOptions {
+  /**
+   * Constructions for faces that were exterior until paired.
+   *
+   * Two exterior walls pressed together each carry an *exterior* construction — brick outside,
+   * gypsum inside — and EnergyPlus expects the two sides of an interzone surface to be each
+   * other's reverse; it warns when they are not, and the partition's heat transfer is then that
+   * of two exterior walls. When given, a `pair-exposed` proposal also switches both sides to
+   * these, but only where the current constructions are not already reverses of each other and
+   * the replacements are. Never applied to the other proposal kinds: there, the constructions
+   * were already chosen for an interzone surface by whoever wrote the file.
+   */
+  interiorConstructions?: InteriorConstructions
+}
+
+/** A construction's layers, outside first, lowercased. Undefined when it is not declared. */
+function constructionLayers(doc: IdfDocument, name: string): string[] | undefined {
+  const wanted = lower(name)
+  for (const id of doc.byClass.get('construction') ?? []) {
+    const obj = doc.objects.get(id)
+    if (obj && lower(obj.fields[0]?.value ?? '') === wanted) {
+      return obj.fields.slice(1).map((f) => lower(f.value)).filter((v) => v !== '')
+    }
+  }
+  return undefined
+}
+
+function areReverses(a: string[] | undefined, b: string[] | undefined): boolean {
+  if (!a || !b || a.length !== b.length) return false
+  return a.every((layer, i) => layer === b[b.length - 1 - i])
+}
+
+function interiorFor(s: Base, c: InteriorConstructions): string | undefined {
+  const t = lower(s.surfaceType)
+  if (t === 'wall') return c.wall
+  if (t === 'floor') return c.floor
+  if (t === 'roof' || t === 'ceiling') return c.ceiling
+  return undefined
+}
+
+/** The construction changes a newly paired, formerly exterior pair needs. See `ProposeOptions`. */
+function constructionChanges(
+  doc: IdfDocument,
+  model: Model,
+  a: Base,
+  b: Base,
+  c: InteriorConstructions,
+): FieldChange[] {
+  if (areReverses(constructionLayers(doc, a.constructionName), constructionLayers(doc, b.constructionName))) return []
+  const ca = interiorFor(a, c)
+  const cb = interiorFor(b, c)
+  if (!ca || !cb || !areReverses(constructionLayers(doc, ca), constructionLayers(doc, cb))) return []
+  const out: FieldChange[] = []
+  for (const [s, to] of [[a, ca], [b, cb]] as const) {
+    if (lower(s.constructionName) === lower(to)) continue
+    const obj = doc.objects.get(s.id)
+    const index = obj && getSchema(obj.classKey, model.version)?.index.get('construction name')
+    if (index === undefined) continue
+    out.push({ objectId: s.id, objectName: s.name, fieldIndex: index, fieldName: 'Construction Name', from: s.constructionName, to })
+  }
+  return out
+}
+
 /**
  * Compare coincident geometry with declared boundary conditions, and propose repairs.
  *
@@ -420,6 +491,7 @@ export function proposeMatches(
   model: Model,
   resolved: ReadonlyMap<string, ResolvedSurface> = resolveModel(model),
   settings: MatchSettings = DEFAULT_MATCH_SETTINGS,
+  options: ProposeOptions = {},
 ): MatchReport {
   const pairs = findCoincidentPairs(model, resolved, settings)
   const names = surfaceByName(model)
@@ -543,6 +615,13 @@ export function proposeMatches(
     if (ba.kind === 'exposed' && bb.kind === 'exposed') {
       kind = 'pair-exposed'
       reason = `${a.name} and ${b.name} are face to face but both open to the outdoors`
+      if (options.interiorConstructions) {
+        const cons = constructionChanges(doc, model, a, b, options.interiorConstructions)
+        if (cons.length > 0) {
+          changes.push(...cons)
+          reason += `; their constructions are not each other's reverse, so both take interior ones`
+        }
+      }
     } else if ((ba.kind === 'one-sided' && ba.twin.id === b.id) || (bb.kind === 'one-sided' && bb.twin.id === a.id)) {
       const [from, to] = ba.kind === 'one-sided' && ba.twin.id === b.id ? [a, b] : [b, a]
       kind = 'complete-pair'

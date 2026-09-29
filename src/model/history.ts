@@ -179,11 +179,14 @@ export class EditHistory {
     }
   }
 
-  /** @internal Called by the write path before an object is changed. */
-  noteWrite(id: string): void {
+  /**
+   * @internal Called by the write path before an object is changed — or, with `created`, just
+   * before a new object is added, so its pre-state is recorded as "did not exist".
+   */
+  noteWrite(id: string, created?: IdfObject): void {
     const entry = this.open
     if (!entry || entry.before.has(id)) return
-    const state = captureObject(this.doc, id)
+    const state = captureObject(this.doc, id, created)
     if (state) entry.before.set(id, state)
   }
 
@@ -226,9 +229,9 @@ export function transact<T>(doc: IdfDocument, label: string, fn: () => T): T {
   return history ? history.transact(label, fn) : fn()
 }
 
-/** @internal Record an object's state before the write path changes it. */
-export function noteWrite(doc: IdfDocument, id: string): void {
-  histories.get(doc)?.noteWrite(id)
+/** @internal Record an object's state before the write path changes it, or before it is created. */
+export function noteWrite(doc: IdfDocument, id: string, created?: IdfObject): void {
+  histories.get(doc)?.noteWrite(id, created)
 }
 
 /** @internal Record the Document's object list before an object is added or removed. */

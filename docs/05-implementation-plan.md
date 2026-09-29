@@ -676,6 +676,10 @@ four with the rejection remembered.
 
 ## Phase 8 — Creation tools · L
 
+**Status: ✅ complete.** 654 tests green (614 from Phases 1–7, 40 new), `tsc --noEmit` and
+`vite build` clean. Gate met against EnergyPlus 26.1.0 under four vertex conventions, and by a
+model drawn end to end in the browser.
+
 Draw new surfaces and zones. Extrude a footprint into a zone. Place fenestration on a base
 surface (with containment and coplanarity enforced, and the 4-vertex limit enforced).
 
@@ -684,7 +688,85 @@ deliberately last: editing existing files is the differentiator, authoring is th
 that five other tools already do well.
 
 **Gate:** create a two-zone model from scratch, export, and run in EnergyPlus with no severe
-errors.
+errors. ✅ **Met, more strictly than stated** — see below.
+
+### What was built
+
+| Piece | Notes |
+|---|---|
+| `src/model/create.ts` | `createObject` — the only way a new object enters a Document: no source span, placed after the last object of its class, field-name comments from the IDD, recorded in the edit history as "did not exist". `valuesByName` fills fields by IDD name, across the 9.6 field renames. |
+| `src/parser/emit.ts` | New objects are held until the next gap and emitted on lines of their own, each after a blank line, splitting the gap after the previous object's line break. Nothing changes for a document with no created objects, so the round trip is untouched. |
+| `src/model/template.ts` | `newModelSource`: a minimal runnable file — simulation control, a location with one heating and one cooling design day, ground temperatures, one output, `Relative` geometry rules, and a seven-construction library whose interior constructions are layer-symmetric. All values our own, and round. |
+| `src/geometry/create.ts` | `extrudeZone` (zone + one wall per footprint edge + floor + roof, oriented outward), `createBaseSurface`, `createSubSurface` / `placeOpening` (windows and doors, mirrored onto an interzone twin), `normalizeFootprint`, `toSourceOrder` (the inverse of the resolver's vertex permutation), `suggestConstruction` / `suggestInteriorConstructions` (the file's habit first, the template's names second, never invented). World in, file conventions out, through the Phase 6 `unresolve` path. Refuses, with the reason, rather than repairs. |
+| `src/geometry/match.ts` | `ProposeOptions.interiorConstructions`: a `pair-exposed` proposal may also switch both sides to interior constructions — only when the current pair is not already each other's reverse and the replacements are. |
+| `src/geometry/validate.ts` | Two rules, transcribed from EnergyPlus's `SurfaceGeometry.cc`: **`surface-inverted-normal`** now applies to every floor and roof/ceiling at EnergyPlus's 1e-6 threshold (it had covered `Outdoors` surfaces only, at 0.1); **`zone-not-enclosed`** is `isEnclosedVolume` — 1 cm vertex merging, the T-junction repair pass, and the reversed twins EnergyPlus auto-creates for `Zone`/`Space` boundaries. `openEdges` is exported. |
+| `test/harness/energyplus.ts` | Returns the `.eio` report and parses `Zone Information` by column name, so the gate can compare EnergyPlus's own floor areas and volumes. |
+| `src/render/viewer.ts` | A ground grid; `setSketch` for an outline being drawn. |
+| `src/ui/Dialog.tsx` | An in-app dialog replacing every `window.prompt` / `window.confirm` (below). |
+| `src/ui/App.tsx` | **New** (template, straight into drawing); **Draw zone** mode — click corners on the ground or on a selected roof, snapped to grid and existing corners, finish by double-click, Enter or clicking the first corner, Backspace and Esc; **+ Window** / **+ Door** on any selected base surface; after a zone is drawn, the Matching panel opens if the new zone meets a neighbour. The matcher in the UI proposes interior constructions for newly paired faces. |
+| `test/model/create.test.ts`, `test/geometry/create.test.ts` | Placement and exact emitted text, empty and newline-less files, undo; orientation of every face, concave footprints, four vertex conventions with rotated buildings, every refusal, containment by area across an L-shaped wall's notch, twin mirroring. |
+| `test/geometry/eplus-create.test.ts` | The gate, and the validator-versus-EnergyPlus agreement checks. |
+
+### Gate outcomes — measured
+
+**From scratch, through the API** — three zones (two side by side, one stacked on the first),
+a window on each, an interzone door, every interzone pair wired by accepting the matcher's
+proposals — written under `UpperLeftCorner/Counterclockwise/Relative`,
+`LowerRightCorner/Clockwise/Relative` with a 30° north axis, `LowerLeftCorner/Clockwise/World`,
+and `UpperRightCorner/Counterclockwise/World` with 45°:
+
+- **4/4: EnergyPlus completes with 0 severe and 0 warnings** (bar its own note that World ignores
+  a north axis). Our validator: 0 issues. The matcher, re-run: nothing left to propose.
+- **EnergyPlus's own zone report equals the geometry exactly, 4/4**: 30 m² / 90 m³, 20 m² / 60 m³,
+  30 m² / 90 m³. Since EnergyPlus falls back to an approximate volume for a zone it cannot close,
+  and warns on a flipped surface, this is independent confirmation of every face's orientation.
+
+**From scratch, through the browser.** New → draw a zone by clicking four arbitrary points →
+draw a second, reusing two of the first's corners by vertex snapping → the Matching panel
+proposes exactly the shared wall, with interior constructions → apply → **+ Door** through the
+shared wall (mirrored onto the twin) → **+ Window** on an exterior wall → an oversized window,
+refused with the reason. The file from the Changes panel, run in EnergyPlus: **completes, 0
+severe**; its one warning is an unused library construction; EnergyPlus's floor areas equal our
+footprint areas (69.58, 45.78 m²) and its volumes are exactly those × 3 m.
+
+**The validator against EnergyPlus.**
+
+| Case | EnergyPlus | Us |
+|---|---|---|
+| A floor and a roof drawn upside down | names both | names the same two |
+| A zone left without its roof | names the zone | names the same zone |
+| One vertex moved on each gate fixture (the Phase 6 measurement) | 7/7 name one zone | 7/7 name the same zone |
+| All 126 current-version corpus files, `DisplayExtraWarnings` on; 100 reach geometry | 0 open zones, 0 upside-down | 0 and 0 — after one fix (below) |
+
+### Discovered en route
+
+- **The validator could not see the two mistakes drawing makes.** The first from-scratch control
+  runs had EnergyPlus reporting `Floor is upside down` and `not fully enclosed` while we reported
+  nothing: the inverted-normal rule looked only at `Outdoors` surfaces, and there was no
+  enclosure rule at all. Both are now EnergyPlus's own algorithm, and the gate asserts the two
+  name the same surfaces and zones.
+- **Enclosure has to include surfaces that do not exist in the file.** The first corpus comparison
+  had 8 false positives in 3 files, all return plenums and similar whose floor is the ceilings of
+  the zones below, declared with `Outside Boundary Condition = Zone`. EnergyPlus auto-creates the
+  reversed twin in the named zone, and so sees a closed volume. Adding those twins took the
+  disagreement to zero.
+- **An exterior construction paired to itself is an interzone construction EnergyPlus questions.**
+  Two zones drawn side by side each get an exterior wall, and pairing them left
+  `does not have the same materials in the reverse order` on every shared wall. The matcher now
+  proposes the file's interior constructions for exactly those pairs — and only when the
+  replacements really are each other's reverse — and the template's interior ones are
+  layer-symmetric so they always are.
+- **`window.prompt` and `window.confirm` throw in some embedded browsers.** Drawing a zone failed
+  outright there with `prompt() is not supported`, and Phase 6's Move zone and Delete
+  confirmations would have too. All five are now an in-app dialog, which also asks for a zone's
+  name and height at once and puts the consequences of a deletion above the choice.
+- **A screen pixel is not a stable ground point.** An end-to-end test that re-clicked the pixels
+  of the first zone's corners missed them by a metre, because the toolbar gained buttons, wrapped,
+  and moved the canvas. The app was right; the test was not. Development builds expose the viewer
+  as `__cartesViewer` so tests click where a point actually projects.
+- **The template needed two objects EnergyPlus asks for.** Without
+  `Site:GroundTemperature:BuildingSurface` every ground floor draws a warning; without any output
+  request, EnergyPlus warns that it produced nothing.
 
 ---
 
@@ -783,9 +865,15 @@ outcomes.
     EnergyPlus on three kinds of breakage. Fixed a latent Phase 5 parser bug that lost every edit
     to a blank field. **Green: 614 tests. Phase 7 complete.**
 
-**Next — Phase 8 — Creation tools.** Draw surfaces and zones, extrude a footprint, place
-fenestration. The matcher becomes the natural finishing step: a new zone drawn against an
-existing one should be offered its interzone pairs rather than left exposed.
+17. ✅ Creation tools: the object-creation write path and emitter placement, an authoring template,
+    zone extrusion, windows and doors with containment/coplanarity/4-vertex enforcement and twin
+    mirroring, the Draw zone / New / + Window / + Door UI, and an in-app dialog in place of
+    browser prompts. Two EnergyPlus rules added to the validator (upside-down surfaces, zone
+    enclosure), agreeing with EnergyPlus on every case measured. Gate met under four vertex
+    conventions and through the browser. **Green: 654 tests. Phase 8 complete.**
+
+**Next — Phase 9 — Polish and reach.** Shareable view state, image export, exploded/stacked
+display, explicit Tier-3 → detailed conversion, and possibly an MCP server.
 
 Still recorded rather than closed:
 
@@ -793,8 +881,14 @@ Still recorded rather than closed:
   pair needs the twin's corresponding corner matched by proximity. Phase 7 deliberately does not
   match offset faces (a 1 mm plane tolerance), so `planCornerMove` still reports the split
   (`CornerMovePlan.splitPairs`) and leaves the decision to the caller.
-- **Partial overlaps are flagged, not split.** Splitting a face to match its neighbour is a
-  geometry-creating operation and belongs with Phase 8's tools.
+- **Partial overlaps are flagged, not split.** A zone drawn against *part* of a neighbour's wall
+  gets a partial overlap the matcher reports but cannot pair; the user must draw to the
+  neighbour's corners (vertex snapping makes that one click each). Automatic intersection —
+  splitting both walls where they meet — is the remaining piece of OpenStudio-style
+  intersect-and-match.
+- **Creation is rectilinear in section.** Zones are vertical extrusions with flat roofs; sloped
+  roofs and non-rectangular openings are available through `createBaseSurface` /
+  `createSubSurface` but have no drawing tool.
 
 Carried-forward gaps, all low-risk and recorded rather than forgotten:
 
@@ -815,8 +909,8 @@ Carried-forward gaps, all low-risk and recorded rather than forgotten:
 - **Gizmo gaps.** No on-screen handle for surface translate along its normal (the operation
   exists; only the UI does not), zone translate takes typed offsets rather than a drag, and a
   moved wall's windows stay put — corner mode refuses fenestrated walls for that reason, vertex
-  mode lets the validator report the containment break. Deletion and zone-move confirmations use
-  `window.confirm`; a proper review panel would suit Phase 7's proposal list too.
+  mode lets the validator report the containment break. (The `window.confirm` confirmations noted
+  here were replaced by an in-app dialog in Phase 8.)
 - **The EnergyPlus gate needs a local binary and a local corpus.** `test/fixtures/` is
   gitignored (fetched, not committed) and E+ is not a package dependency, so the gate
   `describe.skipIf`s itself into silence on a machine without both. It is green locally
