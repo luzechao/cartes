@@ -39,7 +39,15 @@ jobs:
       - run: npm run fetch-idd
       - run: npm run preprocess-idd
 
-      # The fixture corpus and EnergyPlus are not available here; those tests skip themselves.
+      # The fixture corpus: 126 develop files pinned to one EnergyPlus commit and verified by hash,
+      # plus samples from eight releases. EnergyPlus itself is not installed, so the gates that run
+      # it skip themselves; everything else — the round-trip and corpus gates included — runs.
+      - uses: actions/cache@v4
+        with:
+          path: test/fixtures
+          key: fixtures-${{ hashFiles('scripts/fetch-fixtures.sh', 'test/fixtures/testfiles.manifest') }}
+      - run: npm run fetch-fixtures
+
       - run: npx tsc --noEmit
       - run: npx vitest run
 
