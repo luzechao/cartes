@@ -1,19 +1,41 @@
 # cartes
 
-A browser-based, two-way 3D geometry editor for EnergyPlus IDF files.
+A two-way 3D geometry editor for EnergyPlus IDF files that runs entirely in the browser, and runs
+EnergyPlus there too.
 
-**Status:** design phase. No implementation yet — see `docs/` for the research and plan.
+**Try it: https://luzechao.github.io/cartes/** — open an IDF, or pick one from **Geometry → Examples**.
+Files are read locally and never uploaded.
 
-## What it is
+## What it does
 
-Open an existing `.idf` file in the browser, see its geometry in 3D, edit it, and write it
-back **without destroying the rest of the file**. No install, no CAD license, no server.
+Open an existing `.idf`, see its geometry in 3D, edit it, simulate it, and write it back
+**without disturbing the rest of the file**. No install, no CAD license, no server.
+
+- **Lossless round-trip.** Any IDF comes back byte-for-byte; an edit changes only the bytes it
+  should.
+- **3D view.** Shows world and relative coordinates correctly. Colour by surface type or
+  construction, pull storeys apart or show one at a time, share a view as a link, save it as an
+  image.
+- **Validation as EnergyPlus does it.** The enclosure and upside-down checks agree with
+  EnergyPlus on every case measured.
+- **Geometry editing.** Drag vertices and building corners with vertex, edge and grid snapping.
+  Add and delete vertices and move zones. Interzone twins stay in step, and everything can be
+  undone.
+- **Authoring.** Draw zone footprints and extrude them; place windows and doors.
+- **Surface matching.** Find the interzone pairs the geometry implies, and review them before
+  anything is written.
+- **Simplified surfaces.** Convert EnergyPlus's rectangular classes to explicit vertices,
+  computed as EnergyPlus computes them.
+- **Simulation in the browser.** Run the current model, unsaved edits included, through
+  EnergyPlus 26.1 compiled to WebAssembly, with **PythonPlugin** support. See
+  [Simulating](#simulating).
+- **MCP server.** Drive the same operations from an LLM.
 
 ## Why it exists
 
-Every existing tool in the building-energy-modeling space is a *generator*: you author in the
-tool's own model and forward-translate to IDF, one way. Nothing can open an arbitrary
-existing IDF and edit it — except Euclid, which no longer runs on SketchUp 2024+.
+Every other tool in building-energy modeling is a *generator*: you author in the tool's own model
+and translate to IDF, one way. None can open an arbitrary existing IDF and edit it, except Euclid,
+which no longer runs on SketchUp 2024+.
 
 | Tool | Author → IDF | Open existing IDF | Edit it | Free | Browser |
 |---|:---:|:---:|:---:|:---:|:---:|
@@ -23,43 +45,52 @@ existing IDF and edit it — except Euclid, which no longer runs on SketchUp 202
 | FloorspaceJS | ✓ (2D, via OSM) | ✗ | ✗ | ✓ | ✓ |
 | EPShape | ✗ | ✓ | ✗ (read-only) | ✓ | ✓ |
 | Euclid | ✓ | ✓ | ✓ | plugin only | ✗ (dead on SketchUp 2024+) |
-| **idf-editor** | ✓ | ✓ | ✓ | ✓ | ✓ |
+| **cartes** | ✓ | ✓ | ✓ | ✓ | ✓ |
 
-The niche is not "free alternative to SketchUp." It is **the successor to Euclid**:
-lossless round-trip editing of native IDF geometry, in a browser.
-
-See `docs/01-landscape.md` for the full survey.
+The niche is not a free alternative to SketchUp. It is **the successor to Euclid**: lossless
+round-trip editing of native IDF geometry, in a browser. See
+[`docs/01-landscape.md`](docs/01-landscape.md) for the full survey.
 
 ## Scope
 
-**v1 assumes zero wall thickness.** Surfaces are the atoms of the model — exactly as
-EnergyPlus sees them. This is a deliberate simplification: it removes the physical ↔
-analytical model split (the hard BIM problem) and makes the editor model 1:1 with the IDF
-model, which is what makes lossless round-trip tractable.
-
-Thick-wall / architectural authoring is explicitly out of scope for v1. See
-`docs/04-architecture.md` for where it would attach later.
+**Zero wall thickness.** Surfaces are the atoms of the model, exactly as EnergyPlus sees them.
+This keeps the editor's model 1:1 with the IDF, which is what makes lossless round-trip
+tractable; it sidesteps the physical-versus-analytical model split that makes BIM hard. Thick-wall,
+architectural authoring is out of scope. [`docs/04-architecture.md`](docs/04-architecture.md)
+§Where thickness attaches later describes how it would be added.
 
 ## Status
 
-**All nine phases complete.** 685 tests green over 182 real EnergyPlus fixtures spanning
-9 releases. Every geometry-changing operation is also gated against EnergyPlus 26.1 itself.
+The nine phases of [`docs/05-implementation-plan.md`](docs/05-implementation-plan.md) are complete,
+and in-browser simulation has been added on top. The suite has about 700 tests over 182 real
+EnergyPlus files spanning nine releases. Every geometry-changing operation is also gated against
+EnergyPlus 26.1 itself: the edited file must run without new severe errors.
 
-- Open any IDF and get it back byte-for-byte; edit it and change only the bytes you meant to.
-- See it in 3D, including files in relative coordinates, which other viewers get wrong.
-- Validate it the way EnergyPlus does. The upside-down and enclosure checks agree with
-  EnergyPlus on every case measured.
-- Edit geometry: drag vertices and corners with snapping, add and delete vertices, move zones.
-  Interzone twins are kept in step, and everything can be undone.
-- Find the interzone pairs geometry implies, and review them before anything is written.
-- Author: draw zones, extrude them, place windows and doors.
-- Convert EnergyPlus's simplified surface classes to explicit vertices, computed as EnergyPlus
-  computes them.
-- Share a view as a link, save it as an image, and pull storeys apart.
-- Drive all of this from an LLM over MCP.
+## Simulating
 
-See [`docs/05-implementation-plan.md`](docs/05-implementation-plan.md) for what each phase
-measured.
+The ribbon's **Simulate** tab runs the current model through EnergyPlus 26.1.0 in a Web Worker,
+using [`@luzechao/sim-engine-wasm`](https://github.com/luzechao/browser-energy-simulation/tree/main/packages/sim-engine-wasm):
+EnergyPlus compiled to WebAssembly and loaded into Pyodide 314.
+
+- **Inputs.** Load an EPW weather file. Without one, only the model's design days run
+  (`energyplus -D`). Load the `.py` modules named by `PythonPlugin:Instance` objects, and list any
+  Pyodide packages they import, such as `numpy`.
+- **Results.** The sidebar's Simulate tab shows the run status, the live EnergyPlus console, the
+  warning, severe and fatal messages, and every output file to download. **Report** opens
+  `eplustbl.htm`.
+- **Examples.** **Geometry → Examples** opens two EnergyPlus 26.1 models from `public/examples/`,
+  `5ZoneAirCooled` and `PythonPluginCustomOutputVariable`, with the Chicago weather file and, for
+  the second, its plugin module, so they run in one click.
+- **Versions.** The engine reads version 26.1 IDFs. Newer files run with a version warning; older
+  ones should be migrated with IDFVersionUpdater first. The panel says when a file's version
+  differs.
+- **Download size.** The engine (~33 MB) and Pyodide's runtime (~15 MB) load the first time the
+  Simulate tab is opened, and are cached afterwards. Nothing is sent to a server; only Pyodide
+  packages listed in Packages are fetched, from the Pyodide CDN.
+
+Not available in the browser build: ExpandObjects (`HVACTemplate:*`), the Slab and Basement
+preprocessors, PixelCounting shading (EnergyPlus falls back to PolygonClipping) and
+`ExternalInterface`.
 
 ## Getting started
 
@@ -67,89 +98,78 @@ measured.
 npm install
 npm run setup      # fetch IDDs, build the field table, fetch fixtures (~160 MB, gitignored)
 npm test
+npm run dev        # the editor, at http://localhost:5173
 ```
 
-`npm run setup` downloads from the NREL/EnergyPlus repo. Nothing large is committed: the
-27 archived IDDs and the fixture corpus are build inputs, and the generated field table is
-regenerated by `npm run preprocess-idd`. The corpus is pinned to one EnergyPlus commit and
-verified file by file against `test/fixtures/testfiles.manifest`, so every checkout tests the
-same bytes.
+`npm run setup` downloads from the EnergyPlus repository. Nothing large is committed: the 27
+archived IDDs and the fixture corpus are build inputs, and the generated field table is rebuilt by
+`npm run preprocess-idd`. The corpus is pinned to one EnergyPlus commit and verified file by file
+against `test/fixtures/testfiles.manifest`, so every checkout tests the same bytes.
 
-The editor is deployed to **https://luzechao.github.io/cartes/** by
-`.github/workflows/pages.yml` on every push to `main`, after typechecking and the test suite.
-Files are opened locally in the browser and never uploaded anywhere.
+`npm run dev` and `npm run build` first copy the simulation engine and Pyodide runtime into
+`public/sim-engine/` (gitignored) with `sim-engine-wasm-assets`. The package comes from the
+CI-built tarball on its [GitHub Release](https://github.com/luzechao/browser-energy-simulation/releases/tag/sim-engine-wasm-v26.1.0);
+once it is on the npm registry, `npm install @luzechao/sim-engine-wasm@^26.1.0` replaces it.
+
+Other commands:
 
 ```bash
-npm run dev        # the editor, at http://localhost:5173
-npm run test:eplus # the EnergyPlus gates (need a local EnergyPlus; see test/harness/energyplus.ts)
+npm run test:eplus # the EnergyPlus gates (need a native EnergyPlus; see test/harness/energyplus.ts)
 npm run mcp        # the MCP server, over stdio
 ```
 
-**MCP.** `npm run mcp` serves 19 tools: `open_idf`, `new_model`, `extrude_zone`,
-`add_opening`, `propose_matches`, `apply_matches`, `convert_simplified`, `validate`,
-`save_idf`, `undo` and so on. An MCP client can register it with command
-`npx tsx scripts/mcp-server.ts`, run from the repository root. The tools address objects by
-name, return JSON, and go through the same code and undo history as the UI. Nothing is written
-to disk until `save_idf` is called.
-
-If npm fails with `UNABLE_TO_GET_ISSUER_CERT_LOCALLY`, a Homebrew Node is not reading the
-system trust store. Point it at the macOS bundle rather than disabling verification:
+If npm fails with `UNABLE_TO_GET_ISSUER_CERT_LOCALLY`, Node is not reading the system trust store.
+Point it at the macOS bundle rather than disabling verification:
 
 ```bash
 export NODE_EXTRA_CA_CERTS=/etc/ssl/cert.pem
 ```
 
-## Simulating in the browser
+**Deployment.** `.github/workflows/pages.yml` typechecks, tests, builds and deploys to GitHub Pages
+on every push to `main`.
 
-The ribbon's **Simulate** tab runs the current model, unsaved edits included, through EnergyPlus
-26.1.0 in a Web Worker. Nothing is uploaded. The engine is
-[`@luzechao/sim-engine-wasm`](https://github.com/luzechao/browser-energy-simulation/tree/main/packages/sim-engine-wasm):
-EnergyPlus compiled to WebAssembly inside Pyodide 314, with **PythonPlugin** support. Load a
-weather file and plugin `.py` modules from the ribbon, and list Pyodide packages such as `numpy`
-if the plugins import them. Without an EPW, only the model's design days run (`energyplus -D`).
-The sidebar's Simulate tab shows the run status, the live EnergyPlus console, the
-warning/severe/fatal messages, and the output files to download. **Report** opens `eplustbl.htm`.
+**MCP.** `npm run mcp` serves 19 tools, including `open_idf`, `new_model`, `extrude_zone`,
+`add_opening`, `propose_matches`, `apply_matches`, `convert_simplified`, `validate`, `save_idf` and
+`undo`. Register it in an MCP client with the command `npx tsx scripts/mcp-server.ts`, run from the
+repository root. The tools address objects by name, return JSON, and share the UI's code and undo
+history. Nothing is written to disk until `save_idf` is called.
 
-**Geometry → Examples** opens two EnergyPlus 26.1 example models from `public/examples/`:
-`5ZoneAirCooled` and `PythonPluginCustomOutputVariable`. Each comes with its Chicago weather file
-and, for the second, its plugin module, so the Simulate tab is ready to run.
+## Code layout
 
-- `npm run dev` / `npm run build` first copy the engine (~33 MB) and Pyodide's runtime (~15 MB)
-  into `public/sim-engine/` (gitignored), using the package's `sim-engine-wasm-assets` command.
-  The Pages workflow runs the same command before `vite build`.
-- The code is in `src/simulate/`. `engine.ts` is runtime-agnostic, `worker.ts` hosts it off the
-  UI thread, and `client.ts` is the promise API the UI uses. The UI is `src/ui/Ribbon.tsx`,
-  `SimulatePanel.tsx`, `useSimulation.ts` and `examples.ts`; the icons are inline SVGs in
-  `src/ui/icons.tsx`. `test/simulate/engine.test.ts` runs a real simulation with a PythonPlugin
-  in Node.
-- `package.json` installs the package from the CI-built tarball on its GitHub Release
-  (`sim-engine-wasm-v26.1.0`). Once it is on the npm registry, switch to
-  `npm install @luzechao/sim-engine-wasm@^26.1.0`.
-- The engine reads version 26.1 IDFs. The develop-branch corpus is 26.2 and runs with a version
-  warning; the panel says when a file's version differs.
+| Path | Contents |
+|---|---|
+| `src/parser/` | Lossless IDF parser and emitter, IDD field table |
+| `src/model/` | Building model over the document: names, references, edits, undo history, templates |
+| `src/geometry/` | Coordinate resolution, validation, snapping, dragging, creation, matching, tier-3 conversion |
+| `src/render/` | three.js scene, viewer and storey display |
+| `src/simulate/` | Simulation engine (`engine.ts`), its Web Worker (`worker.ts`) and the UI's client (`client.ts`) |
+| `src/ui/` | React shell: ribbon (`Ribbon.tsx`, `icons.tsx`), panels, dialogs, examples |
+| `src/mcp/` | MCP server and session |
+| `test/` | Unit tests, corpus and round-trip gates, EnergyPlus gates, simulation tests |
 
 ## Documents
 
 | Doc | Contents |
 |---|---|
 | [`docs/01-landscape.md`](docs/01-landscape.md) | Ecosystem survey, the gap, who this is for |
-| [`docs/02-prior-art.md`](docs/02-prior-art.md) | Lessons from EPShape, VI-Suite, Pascal Editor — verified at source level |
+| [`docs/02-prior-art.md`](docs/02-prior-art.md) | Lessons from EPShape, VI-Suite, Pascal Editor, verified at source level |
 | [`docs/03-idf-geometry.md`](docs/03-idf-geometry.md) | IDF geometry domain reference: classes, field orders, coordinate rules, gotchas |
 | [`docs/04-architecture.md`](docs/04-architecture.md) | System design and the decisions behind it |
-| [`docs/05-implementation-plan.md`](docs/05-implementation-plan.md) | Phased build plan with gates |
+| [`docs/05-implementation-plan.md`](docs/05-implementation-plan.md) | Phased build plan, with what each phase measured |
 
 ## Stack
 
-TypeScript · Vite · three.js · earcut · polygon-clipping · React (UI chrome only) · Pyodide +
-`@luzechao/sim-engine-wasm` (in-browser EnergyPlus).
-Pure client-side, no backend; the optional MCP server runs the same library in Node. See
-`docs/04-architecture.md` §Stack for rationale.
+TypeScript · Vite · three.js · earcut · polygon-clipping · React (UI chrome only) · Pyodide with
+`@luzechao/sim-engine-wasm` for simulation. Entirely client-side, with no backend; the optional
+MCP server runs the same library in Node. See [`docs/04-architecture.md`](docs/04-architecture.md)
+§Stack for the rationale.
 
 ## License
 
-[Apache License 2.0](LICENSE). See [NOTICE](NOTICE): parts of the geometry code are transcribed
-from EnergyPlus, whose BSD-style copyright notice and conditions travel with them.
+[Apache License 2.0](LICENSE). See [NOTICE](NOTICE): parts of the geometry code are transcribed from
+EnergyPlus, and the example models are EnergyPlus files; EnergyPlus's BSD-style copyright notice
+and conditions travel with them. The simulation engine is a separate package with its own notices.
 
-cartes is an independent project, not affiliated with or endorsed by the U.S. Department of
-Energy or the EnergyPlus developers. VI-Suite (GPL v2) was studied as a *reference* only — no
-code is copied from it; see `docs/02-prior-art.md` §Licensing.
+cartes is an independent project, not affiliated with or endorsed by the U.S. Department of Energy
+or the EnergyPlus developers. VI-Suite (GPL v2) was studied as a *reference* only, and no code is
+copied from it; see [`docs/02-prior-art.md`](docs/02-prior-art.md) §Licensing.

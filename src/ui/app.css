@@ -1210,8 +1210,9 @@ button:disabled {
 .ribbon__body {
   display: flex;
   align-items: stretch;
-  /* Tall enough for the Simulate tab's captioned buttons, so switching tabs does not move the canvas. */
-  min-height: 94px;
+  /* One fixed height for every tab (the Geometry tab's snap column is the tallest), so switching tabs does not
+     move the canvas. */
+  height: 103px;
   padding: 4px 6px 0;
   overflow-x: auto;
 }
