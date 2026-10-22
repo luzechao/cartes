@@ -51,6 +51,9 @@ jobs:
       - run: npx tsc --noEmit
       - run: npx vitest run
 
+      # The in-browser simulation engine and Pyodide runtime, served from public/sim-engine/.
+      - run: npx sim-engine-wasm-assets public/sim-engine
+
       - run: npx vite build
         env:
           CARTES_BASE: /${{ github.event.repository.name }}/

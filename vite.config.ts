@@ -11,6 +11,13 @@ export default defineConfig({
       '@': fileURLToPath(new URL('./src', import.meta.url)),
     },
   },
+  // Pyodide loads its runtime from public/sim-engine/pyodide at run time; pre-bundling it breaks that lookup.
+  optimizeDeps: {
+    exclude: ['pyodide'],
+  },
+  worker: {
+    format: 'es',
+  },
   build: {
     target: 'es2022',
   },

@@ -99,6 +99,35 @@ system trust store. Point it at the macOS bundle rather than disabling verificat
 export NODE_EXTRA_CA_CERTS=/etc/ssl/cert.pem
 ```
 
+## Simulating in the browser
+
+The ribbon's **Simulate** tab runs the current model, unsaved edits included, through EnergyPlus
+26.1.0 in a Web Worker. Nothing is uploaded. The engine is
+[`@luzechao/sim-engine-wasm`](https://github.com/luzechao/browser-energy-simulation/tree/main/packages/sim-engine-wasm):
+EnergyPlus compiled to WebAssembly inside Pyodide 314, with **PythonPlugin** support. Load a
+weather file and plugin `.py` modules from the ribbon, and list Pyodide packages such as `numpy`
+if the plugins import them. Without an EPW, only the model's design days run (`energyplus -D`).
+The sidebar's Simulate tab shows the run status, the live EnergyPlus console, the
+warning/severe/fatal messages, and the output files to download. **Report** opens `eplustbl.htm`.
+
+**Geometry → Examples** opens two EnergyPlus 26.1 example models from `public/examples/`:
+`5ZoneAirCooled` and `PythonPluginCustomOutputVariable`. Each comes with its Chicago weather file
+and, for the second, its plugin module, so the Simulate tab is ready to run.
+
+- `npm run dev` / `npm run build` first copy the engine (~33 MB) and Pyodide's runtime (~15 MB)
+  into `public/sim-engine/` (gitignored), using the package's `sim-engine-wasm-assets` command.
+  The Pages workflow runs the same command before `vite build`.
+- The code is in `src/simulate/`. `engine.ts` is runtime-agnostic, `worker.ts` hosts it off the
+  UI thread, and `client.ts` is the promise API the UI uses. The UI is `src/ui/Ribbon.tsx`,
+  `SimulatePanel.tsx`, `useSimulation.ts` and `examples.ts`; the icons are inline SVGs in
+  `src/ui/icons.tsx`. `test/simulate/engine.test.ts` runs a real simulation with a PythonPlugin
+  in Node.
+- `package.json` installs the package from the CI-built tarball on its GitHub Release
+  (`sim-engine-wasm-v26.1.0`). Once it is on the npm registry, switch to
+  `npm install @luzechao/sim-engine-wasm@^26.1.0`.
+- The engine reads version 26.1 IDFs. The develop-branch corpus is 26.2 and runs with a version
+  warning; the panel says when a file's version differs.
+
 ## Documents
 
 | Doc | Contents |
@@ -111,7 +140,8 @@ export NODE_EXTRA_CA_CERTS=/etc/ssl/cert.pem
 
 ## Stack
 
-TypeScript · Vite · three.js · earcut · polygon-clipping · React (UI chrome only).
+TypeScript · Vite · three.js · earcut · polygon-clipping · React (UI chrome only) · Pyodide +
+`@luzechao/sim-engine-wasm` (in-browser EnergyPlus).
 Pure client-side, no backend; the optional MCP server runs the same library in Node. See
 `docs/04-architecture.md` §Stack for rationale.
 

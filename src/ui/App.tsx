@@ -64,6 +64,10 @@ import { ObjectTree } from './ObjectTree.js'
 import { Inspector } from './Inspector.js'
 import { DiffPanel } from './DiffPanel.js'
 import { MatchPanel } from './MatchPanel.js'
+import { Ribbon } from './Ribbon.js'
+import { SimulatePanel } from './SimulatePanel.js'
+import { useSimulation } from './useSimulation.js'
+import { EXAMPLES, fetchExample, type Example } from './examples.js'
 import { useDialog } from './Dialog.js'
 import { decodeViewState, encodeViewState, type DisplayState } from './viewState.js'
 
@@ -148,7 +152,7 @@ interface BuildStats {
   skipped: number
 }
 
-type RightPanelTab = 'inspector' | 'validation' | 'matching'
+type RightPanelTab = 'inspector' | 'validation' | 'matching' | 'simulate'
 type ValidationFilter = 'all' | 'error' | 'warning'
 
 export function App(): React.JSX.Element {
@@ -177,6 +181,7 @@ export function App(): React.JSX.Element {
   const [notice, setNotice] = useState<string | undefined>(undefined)
   const [display, setDisplay] = useState<DisplayState>({ mode: 'stacked' })
   const { ask, element: dialog } = useDialog()
+  const simulation = useSimulation()
 
   // Pointer and keyboard handlers outlive a render; they read the current state through these.
   const loadedRef = useRef<LoadedFile | undefined>(undefined)
@@ -1028,6 +1033,66 @@ export function App(): React.JSX.Element {
     return true
   })
 
+  /** Show `tab` in the right panel, or hide the panel if that tab is already showing. */
+  const toggleRightTab = (tab: RightPanelTab): void => {
+    if (showRightPanel && rightTab === tab) setShowRightPanel(false)
+    else {
+      setRightTab(tab)
+      setShowRightPanel(true)
+    }
+  }
+
+  const chooseEditMode = (mode: EditMode): void => {
+    setEditMode(mode)
+    setActiveHandle(undefined)
+    // Drawing without a grid means corners at 3.0417 m; with one, at 3.0 m.
+    if (mode === 'draw' && !snap.grid) setSnap({ ...snap, grid: true })
+    setNotice(
+      mode === 'vertex'
+        ? 'Select a surface, then drag a handle within its plane. Double-click an edge to add a vertex; Delete removes the active vertex, or the surface.'
+        : mode === 'corner'
+          ? 'Select a surface, then drag a corner in plan: everything on that vertical edge moves together.'
+          : mode === 'draw'
+            ? 'Click to place the corners of a new zone — on the ground, or on top of a selected roof. Double-click, Enter, or click the first corner to finish; Backspace removes a corner; Esc cancels.'
+            : undefined,
+    )
+  }
+
+  const chooseStoreys = (value: string): void => {
+    const next: DisplayState =
+      value === 'exploded' ? { mode: 'exploded' } : value.startsWith('solo:') ? { mode: 'solo', storey: Number(value.slice(5)) } : { mode: 'stacked' }
+    setDisplay(next)
+    // Editing works in the model's own frame; with storeys moved or hidden it would not.
+    if (next.mode !== 'stacked') {
+      setEditMode('off')
+      setActiveHandle(undefined)
+    }
+  }
+
+  /** Open a bundled example, and set the weather file and plugin modules it simulates with. */
+  const loadExample = async (example: Example): Promise<void> => {
+    try {
+      const files = await fetchExample(example, import.meta.env.BASE_URL)
+      load(files.name, files.text)
+      simulation.setEpw(files.epw)
+      simulation.setPluginFiles(files.plugins)
+      setNotice(
+        `Opened the ${example.title} example. Its weather file${files.plugins.length ? ' and PythonPlugin module are' : ' is'} ` +
+          'set in the Simulate tab, ready to run.',
+      )
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : String(cause))
+    }
+  }
+
+  const runSimulation = (): void => {
+    if (!loaded) return
+    // Bring the console into view so the run can be followed.
+    setRightTab('simulate')
+    setShowRightPanel(true)
+    void simulation.run(currentText, loaded.name, dirtyObjects.length > 0)
+  }
+
   return (
     <div
       className={`app${dragging ? ' app--dragging' : ''}`}
@@ -1038,259 +1103,75 @@ export function App(): React.JSX.Element {
       onDragLeave={() => setDragging(false)}
       onDrop={onDrop}
     >
-      <header className="bar">
-        <strong>cartes</strong>
-        <button type="button" onClick={newModel} title="Start a new model from the authoring template">
-          New
-        </button>
-        <label className="file">
-          Open IDF
-          <input
-            type="file"
-            accept=".idf,.imf,text/plain"
-            onChange={(e) => {
-              const file = e.target.files?.[0]
-              if (file) void open(file)
-            }}
-          />
-        </label>
-
-        {loaded && (
-          <>
-            <button
-              type="button"
-              className={showTree ? 'button--active' : ''}
-              onClick={() => setShowTree(!showTree)}
-              title="Toggle Object Tree"
-            >
-              Tree
-            </button>
-
-            <button
-              type="button"
-              className={showRightPanel && rightTab === 'inspector' ? 'button--active' : ''}
-              onClick={() => {
-                if (showRightPanel && rightTab === 'inspector') setShowRightPanel(false)
-                else {
-                  setRightTab('inspector')
-                  setShowRightPanel(true)
+      <Ribbon
+        meta={
+          loaded
+            ? `${loaded.name} · EnergyPlus ${loaded.model.version} · ${loaded.model.rules.coordinateSystem} coordinates · ${loaded.model.zones.size} zones · ${stats?.drawn ?? 0} surfaces · ${Math.round(loaded.ms)} ms`
+            : undefined
+        }
+        hasModel={loaded !== undefined}
+        geometry={{
+          onNew: newModel,
+          onOpenFile: (file) => void open(file),
+          examples: EXAMPLES,
+          onLoadExample: (example) => void loadExample(example),
+          changesCount: dirtyObjects.length,
+          onShowChanges: () => setShowDiff(true),
+          canUndo: loaded?.history.canUndo ?? false,
+          undoLabel: loaded?.history.undoLabel,
+          onUndo: undo,
+          canRedo: loaded?.history.canRedo ?? false,
+          redoLabel: loaded?.history.redoLabel,
+          onRedo: redo,
+          treeVisible: showTree,
+          onToggleTree: () => setShowTree(!showTree),
+          inspectorVisible: showRightPanel && rightTab === 'inspector',
+          onToggleInspector: () => toggleRightTab('inspector'),
+          validationVisible: showRightPanel && rightTab === 'validation',
+          validationCount: validation?.issues.length ?? 0,
+          onToggleValidation: () => toggleRightTab('validation'),
+          matchingVisible: showRightPanel && rightTab === 'matching',
+          matchingCount: matchReport?.proposals.length ?? 0,
+          onToggleMatching: () => toggleRightTab('matching'),
+          editMode,
+          editLocked: display.mode !== 'stacked',
+          onEditMode: chooseEditMode,
+          snap,
+          onSnap: setSnap,
+          canAddOpening: selectedId !== undefined && loaded?.model.surfaces.get(selectedId)?.kind === 'base',
+          onAddWindow: () => void addOpening('Window'),
+          onAddDoor: () => void addOpening('Door'),
+          canModifySelection:
+            editMode !== 'off' && editMode !== 'draw' && selectedId !== undefined && (loaded?.model.surfaces.has(selectedId) ?? false),
+          onMoveZone: () => void moveZone(),
+          onDelete: () => void deleteSelection(),
+          colorBy,
+          onColorByChange: setColorBy,
+          storeys:
+            loaded && storeys && storeys.storeys.length > 1
+              ? {
+                  value: display.mode === 'solo' ? `solo:${display.storey}` : display.mode,
+                  options: [
+                    { value: 'stacked', label: 'Storeys stacked' },
+                    { value: 'exploded', label: 'Storeys exploded' },
+                    ...storeys.storeys.map((st) => ({
+                      value: `solo:${st.index}`,
+                      label: `Storey ${st.index + 1} only (z ${+st.z.toFixed(2)} m, ${st.zoneIds.length} zone${st.zoneIds.length === 1 ? '' : 's'})`,
+                    })),
+                  ],
                 }
-              }}
-              title="Toggle Inspector"
-            >
-              Inspector
-            </button>
-
-            <button
-              type="button"
-              className={showRightPanel && rightTab === 'validation' ? 'button--active' : ''}
-              onClick={() => {
-                if (showRightPanel && rightTab === 'validation') setShowRightPanel(false)
-                else {
-                  setRightTab('validation')
-                  setShowRightPanel(true)
-                }
-              }}
-              title="Toggle Validation"
-            >
-              Validation ({validation?.issues.length ?? 0})
-            </button>
-
-            <button
-              type="button"
-              className={showRightPanel && rightTab === 'matching' ? 'button--active' : ''}
-              onClick={() => {
-                if (showRightPanel && rightTab === 'matching') setShowRightPanel(false)
-                else {
-                  setRightTab('matching')
-                  setShowRightPanel(true)
-                }
-              }}
-              title="Review proposed interzone surface pairs"
-            >
-              Matching ({matchReport?.proposals.length ?? 0})
-            </button>
-
-            <button
-              type="button"
-              className={dirtyObjects.length > 0 ? 'button--active' : ''}
-              onClick={() => setShowDiff(true)}
-              title="View live diff and raw text"
-            >
-              Changes ({dirtyObjects.length})
-            </button>
-          </>
-        )}
-
-        <label>
-          Colour by{' '}
-          <select value={colorBy} onChange={(e) => setColorBy(e.target.value as ColorBy)}>
-            <option value="type">surface type</option>
-            <option value="construction">construction</option>
-          </select>
-        </label>
-
-        <button type="button" onClick={() => viewerRef.current?.fit()}>
-          Fit
-        </button>
-
-        {loaded && storeys && storeys.storeys.length > 1 && (
-          <label title="Pull storeys apart, or show one at a time">
-            Storeys{' '}
-            <select
-              value={display.mode === 'solo' ? `solo:${display.storey}` : display.mode}
-              onChange={(e) => {
-                const v = e.target.value
-                const next: DisplayState =
-                  v === 'exploded' ? { mode: 'exploded' } : v.startsWith('solo:') ? { mode: 'solo', storey: Number(v.slice(5)) } : { mode: 'stacked' }
-                setDisplay(next)
-                // Editing works in the model's own frame; with storeys moved or hidden it would not.
-                if (next.mode !== 'stacked') {
-                  setEditMode('off')
-                  setActiveHandle(undefined)
-                }
-              }}
-            >
-              <option value="stacked">stacked</option>
-              <option value="exploded">exploded</option>
-              {storeys.storeys.map((st) => (
-                <option key={st.index} value={`solo:${st.index}`}>
-                  storey {st.index + 1} only (z {+st.z.toFixed(2)} m, {st.zoneIds.length} zone{st.zoneIds.length === 1 ? '' : 's'})
-                </option>
-              ))}
-            </select>
-          </label>
-        )}
-
-        {loaded && (
-          <>
-            <button type="button" onClick={shareView} title="Copy a link to this view">
-              Link
-            </button>
-            <button type="button" onClick={saveImage} title="Save the view as a PNG image">
-              Image
-            </button>
-          </>
-        )}
-
-        {loaded && (
-          <>
-            <span className="bar__group" role="group" aria-label="Edit geometry">
-              {(['off', 'vertex', 'corner', 'draw'] as const).map((mode) => (
-                <button
-                  key={mode}
-                  type="button"
-                  disabled={mode !== 'off' && display.mode !== 'stacked'}
-                  className={editMode === mode ? 'button--active' : ''}
-                  onClick={() => {
-                    setEditMode(mode)
-                    setActiveHandle(undefined)
-                    // Drawing without a grid means corners at 3.0417 m; with one, at 3.0 m.
-                    if (mode === 'draw' && !snap.grid) setSnap({ ...snap, grid: true })
-                    setNotice(
-                      mode === 'vertex'
-                        ? 'Select a surface, then drag a handle within its plane. Double-click an edge to add a vertex; Delete removes the active vertex, or the surface.'
-                        : mode === 'corner'
-                          ? 'Select a surface, then drag a corner in plan: everything on that vertical edge moves together.'
-                          : mode === 'draw'
-                            ? 'Click to place the corners of a new zone — on the ground, or on top of a selected roof. Double-click, Enter, or click the first corner to finish; Backspace removes a corner; Esc cancels.'
-                            : undefined,
-                    )
-                  }}
-                  title={
-                    mode === 'off'
-                      ? 'Select and inspect only'
-                      : mode === 'vertex'
-                        ? 'Drag vertices within their surface plane'
-                        : mode === 'corner'
-                          ? 'Drag building corners in plan'
-                          : 'Draw a zone footprint and extrude it'
-                  }
-                >
-                  {mode === 'off' ? 'Select' : mode === 'vertex' ? 'Vertex' : mode === 'corner' ? 'Corner' : 'Draw zone'}
-                </button>
-              ))}
-            </span>
-
-            {editMode !== 'off' && (
-              <span className="bar__group" role="group" aria-label="Snapping">
-                Snap
-                {(['vertex', 'edge', 'grid'] as const).map((kind) => (
-                  <label key={kind} className="bar__check">
-                    <input
-                      type="checkbox"
-                      checked={snap[kind]}
-                      onChange={(e) => setSnap({ ...snap, [kind]: e.target.checked })}
-                    />
-                    {kind}
-                  </label>
-                ))}
-                {snap.grid && (
-                  <select
-                    value={snap.gridSize}
-                    onChange={(e) => setSnap({ ...snap, gridSize: Number(e.target.value) })}
-                    title="Grid spacing"
-                  >
-                    {[0.01, 0.05, 0.1, 0.25, 0.5, 1].map((g) => (
-                      <option key={g} value={g}>
-                        {g} m
-                      </option>
-                    ))}
-                  </select>
-                )}
-              </span>
-            )}
-
-            {selectedId && loaded.model.surfaces.get(selectedId)?.kind === 'base' && (
-              <>
-                <button type="button" onClick={() => addOpening('Window')} title="Add a window to the selected surface">
-                  + Window
-                </button>
-                <button type="button" onClick={() => addOpening('Door')} title="Add a door to the selected surface">
-                  + Door
-                </button>
-              </>
-            )}
-
-            {editMode !== 'off' && editMode !== 'draw' && selectedId && loaded.model.surfaces.has(selectedId) && (
-              <>
-                <button type="button" onClick={moveZone} title="Translate the selected surface's zone">
-                  Move zone…
-                </button>
-                <button type="button" onClick={deleteSelection} title="Delete the active vertex, or the surface">
-                  Delete
-                </button>
-              </>
-            )}
-
-            <button
-              type="button"
-              onClick={undo}
-              disabled={!loaded.history.canUndo}
-              title={loaded.history.undoLabel ? `Undo ${loaded.history.undoLabel} (Ctrl+Z)` : 'Nothing to undo'}
-            >
-              Undo
-            </button>
-            <button
-              type="button"
-              onClick={redo}
-              disabled={!loaded.history.canRedo}
-              title={loaded.history.redoLabel ? `Redo ${loaded.history.redoLabel} (Ctrl+Shift+Z)` : 'Nothing to redo'}
-            >
-              Redo
-            </button>
-          </>
-        )}
-
-        <span className="spacer" />
-        {loaded && (
-          <span className="meta">
-            {loaded.name} · EnergyPlus {loaded.model.version} ·{' '}
-            {loaded.model.rules.coordinateSystem} coordinates · {loaded.model.zones.size} zones ·{' '}
-            {stats?.drawn ?? 0} surfaces · {Math.round(loaded.ms)} ms
-          </span>
-        )}
-      </header>
+              : undefined,
+          onStoreys: chooseStoreys,
+          onFit: () => viewerRef.current?.fit(),
+          onShareLink: () => void shareView(),
+          onSaveImage: saveImage,
+        }}
+        simulation={simulation}
+        edited={dirtyObjects.length > 0}
+        onRun={runSimulation}
+        consoleVisible={showRightPanel && rightTab === 'simulate'}
+        onToggleConsole={() => toggleRightTab('simulate')}
+      />
 
       <div className="workspace">
         {/* Left Drawer: Object Tree */}
@@ -1373,7 +1254,7 @@ export function App(): React.JSX.Element {
           )}
         </div>
 
-        {/* Right Drawer: Inspector or Validation */}
+        {/* Right Drawer: Inspector, Validation, Matching or Simulate */}
         {loaded && showRightPanel && (
           <aside className="right-panel">
             <div className="right-panel__tabs">
@@ -1398,10 +1279,19 @@ export function App(): React.JSX.Element {
               >
                 Matching ({matchReport?.proposals.length ?? 0})
               </button>
+              <button
+                type="button"
+                className={`right-panel__tab${rightTab === 'simulate' ? ' right-panel__tab--active' : ''}`}
+                onClick={() => setRightTab('simulate')}
+              >
+                Simulate
+              </button>
             </div>
 
             <div className="right-panel__body">
-              {rightTab === 'matching' && matchReport ? (
+              {rightTab === 'simulate' ? (
+                <SimulatePanel simulation={simulation} idfVersion={loaded.model.versionResolution.declared} />
+              ) : rightTab === 'matching' && matchReport ? (
                 <MatchPanel
                   model={loaded.model}
                   report={matchReport}

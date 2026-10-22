@@ -16,12 +16,16 @@
     "fetch-fixtures": "./scripts/fetch-fixtures.sh",
     "preprocess-idd": "tsx scripts/preprocess-idd.ts",
     "setup": "npm run fetch-idd && npm run preprocess-idd && npm run fetch-fixtures",
-    "mcp": "tsx scripts/mcp-server.ts"
+    "mcp": "tsx scripts/mcp-server.ts",
+    "predev": "sim-engine-wasm-assets public/sim-engine",
+    "prebuild": "sim-engine-wasm-assets public/sim-engine"
   },
   "dependencies": {
+    "@luzechao/sim-engine-wasm": "https://github.com/luzechao/browser-energy-simulation/releases/download/sim-engine-wasm-v26.1.0/luzechao-sim-engine-wasm-26.1.0.tgz",
     "dexie": "^4.0.0",
     "earcut": "^3.0.0",
     "polygon-clipping": "^0.15.7",
+    "pyodide": "~314.0.7",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "three": "^0.180.0",

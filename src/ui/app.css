@@ -51,22 +51,6 @@ body,
   flex: 1;
 }
 
-.meta {
-  opacity: 0.75;
-  font-variant-numeric: tabular-nums;
-}
-
-.file {
-  cursor: pointer;
-  padding: 3px 10px;
-  border: 1px solid #4a4d55;
-  border-radius: 4px;
-}
-
-.file input {
-  display: none;
-}
-
 button,
 select {
   font: inherit;
@@ -580,7 +564,9 @@ canvas {
   color: #9da0a8;
   font-size: 12px;
   font-weight: 500;
-  padding: 9px 12px;
+  /* Four tabs share the panel's 360 px; keep each label on one line. */
+  padding: 9px 4px;
+  white-space: nowrap;
   cursor: pointer;
   text-align: center;
 }
@@ -930,19 +916,6 @@ canvas {
 }
 
 /* Phase 6 — geometry editing controls */
-.bar__group {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-}
-
-.bar__check {
-  display: inline-flex;
-  align-items: center;
-  gap: 3px;
-  font-size: 0.9em;
-}
-
 .canvas--edit {
   cursor: crosshair;
 }
@@ -1143,4 +1116,590 @@ button:disabled {
   margin-left: 6px;
   cursor: pointer;
   pointer-events: auto;
+}
+
+/* Ribbon toolbar */
+.ribbon {
+  /* A grid item: without this its content width would widen the page instead of scrolling the body. */
+  min-width: 0;
+  background: var(--bar);
+  color: var(--bar-text);
+  border-bottom: 1px solid #16171b;
+  user-select: none;
+}
+
+.ribbon__tabs {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  padding: 0 12px;
+  height: 32px;
+  background: #1a1b20;
+}
+
+.ribbon__brand {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  align-self: center;
+  margin-right: 14px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  color: #fff;
+}
+
+.ribbon__brand svg {
+  color: var(--accent);
+}
+
+.ribbon__tab {
+  position: relative;
+  height: 28px;
+  padding: 0 16px;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+  background: transparent;
+  color: #9da0a8;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.ribbon__tab:hover {
+  color: #fff;
+}
+
+.ribbon__tab--active {
+  background: var(--bar);
+  border-color: #31343c;
+  color: #fff;
+}
+
+.ribbon__tab--active::after {
+  content: '';
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  top: -1px;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+
+.ribbon__tab-badge {
+  margin-left: 6px;
+  padding: 0 5px;
+  border-radius: 8px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.ribbon__meta {
+  align-self: center;
+  opacity: 0.7;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+
+.ribbon__body {
+  display: flex;
+  align-items: stretch;
+  /* Tall enough for the Simulate tab's captioned buttons, so switching tabs does not move the canvas. */
+  min-height: 94px;
+  padding: 4px 6px 0;
+  overflow-x: auto;
+}
+
+.ribbon__group {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+  padding: 0 6px;
+  border-right: 1px solid #31343c;
+}
+
+.ribbon__group-items {
+  flex: 1;
+  display: flex;
+  align-items: flex-start;
+  gap: 2px;
+}
+
+.ribbon__group-label {
+  padding: 2px 0 4px;
+  text-align: center;
+  font-size: 10.5px;
+  color: #7d808a;
+  letter-spacing: 0.3px;
+}
+
+.ribbon__button {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  min-width: 50px;
+  padding: 6px 6px 4px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: #d6d8de;
+  cursor: pointer;
+}
+
+.ribbon__button:hover:not(:disabled) {
+  background: #31343c;
+  border-color: #3c404b;
+}
+
+.ribbon__button:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.ribbon__button--active {
+  background: rgba(74, 144, 217, 0.18);
+  border-color: rgba(74, 144, 217, 0.55);
+  color: #fff;
+}
+
+.ribbon__button--highlighted .ribbon__icon {
+  color: #e9b44c;
+}
+
+.ribbon__button--primary {
+  min-width: 84px;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+  font-weight: 600;
+}
+
+.ribbon__button--primary:hover:not(:disabled) {
+  background: #5a9de0;
+  border-color: #5a9de0;
+}
+
+.ribbon__icon {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 28px;
+}
+
+.ribbon__badge {
+  position: absolute;
+  top: -2px;
+  right: -10px;
+  min-width: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: #d99b26;
+  color: #1a1a1a;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 15px;
+  text-align: center;
+}
+
+.ribbon__label {
+  font-size: 11.5px;
+  line-height: 1.1;
+  white-space: nowrap;
+}
+
+.ribbon__input {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  max-width: 110px;
+}
+
+.ribbon__caption {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  max-width: 108px;
+  font-size: 10.5px;
+  color: #8b8e97;
+}
+
+.ribbon__caption-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ribbon__clear {
+  display: flex;
+  padding: 1px;
+  border: none;
+  background: transparent;
+  color: #8b8e97;
+  cursor: pointer;
+}
+
+.ribbon__clear:hover {
+  color: #fff;
+}
+
+.ribbon__field {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  padding: 8px 6px 0;
+  font-size: 11.5px;
+  color: #d6d8de;
+}
+
+.ribbon__field-label {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.ribbon__field input {
+  width: 120px;
+  font: inherit;
+  padding: 4px 6px;
+  border-radius: 4px;
+  border: 1px solid #4a4d55;
+  background: #1c1d22;
+  color: inherit;
+}
+
+.ribbon__quick {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  align-self: center;
+  margin-right: 14px;
+  padding-left: 12px;
+  border-left: 1px solid #31343c;
+}
+
+.ribbon__quick-button {
+  display: flex;
+  padding: 3px;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  background: transparent;
+  color: #d6d8de;
+  cursor: pointer;
+}
+
+.ribbon__quick-button:hover:not(:disabled) {
+  background: #31343c;
+  border-color: #3c404b;
+}
+
+.ribbon__quick-button:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.ribbon__stack--controls {
+  gap: 6px;
+  padding: 8px 4px 0;
+}
+
+.ribbon__select {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #d6d8de;
+}
+
+.ribbon__select select {
+  width: 128px;
+  font-size: 11.5px;
+  padding: 1px 4px;
+}
+
+
+
+
+.ribbon__note {
+  align-self: center;
+  max-width: 96px;
+  padding-left: 6px;
+  font-size: 10.5px;
+  color: #8b8e97;
+  line-height: 1.3;
+}
+
+/* Simulate panel (sidebar) */
+.simulate-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.simulate-panel__section {
+  padding: 12px 14px;
+  border-bottom: 1px solid #31343c;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.simulate-panel__engine {
+  font-size: 12px;
+  color: #9da0a8;
+}
+
+.simulate-panel__note {
+  font-size: 12px;
+  line-height: 1.4;
+  color: #e9cf9a;
+  background: rgba(217, 155, 38, 0.14);
+  border-left: 2px solid #d99b26;
+  padding: 6px 8px;
+  border-radius: 4px;
+}
+
+.simulate-panel__hint {
+  font-size: 11px;
+  color: #8b8e97;
+}
+
+.simulate-panel__error {
+  font-size: 12px;
+  color: #ff9a9a;
+  word-break: break-word;
+}
+
+.simulate-panel__status {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 8px 10px;
+  border-radius: 6px;
+  font-variant-numeric: tabular-nums;
+}
+
+.simulate-panel__status--ok {
+  background: rgba(46, 125, 50, 0.25);
+  border: 1px solid #2e7d32;
+}
+
+.simulate-panel__status--failed {
+  background: rgba(224, 69, 69, 0.2);
+  border: 1px solid #e04545;
+}
+
+.simulate-panel__status--running {
+  background: rgba(74, 144, 217, 0.18);
+  border: 1px solid var(--accent);
+}
+
+.simulate-panel__console {
+  flex: 1;
+  min-height: 0;
+  margin: 0;
+  padding: 10px 12px;
+  overflow: auto;
+  background: #141518;
+  color: #c9ccd3;
+  font: 11px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: pre-wrap;
+  word-break: break-word;
+  user-select: text;
+}
+
+.simulate-panel__placeholder {
+  color: #6c707a;
+  font-family: ui-sans-serif, system-ui, sans-serif;
+}
+
+.simulate-panel__list {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.simulate-panel__filter {
+  display: flex;
+  gap: 14px;
+  font-size: 12px;
+  color: #c4c6cd;
+}
+
+.simulate-panel__file-row {
+  display: flex;
+  justify-content: space-between;
+  padding: 7px 10px;
+  border-radius: 6px;
+  background: #2b2e36;
+  border: 1px solid #3c404b;
+  color: #d6d8de;
+  text-decoration: none;
+  font-size: 12px;
+}
+
+.simulate-panel__file-row:hover {
+  border-color: var(--accent);
+  color: #fff;
+}
+
+.simulate-panel__size {
+  color: #8b8e97;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Ribbon: compact commands, snapping, examples menu */
+.ribbon__stack {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-top: 4px;
+}
+
+.ribbon__small {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 8px 3px 5px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: #d6d8de;
+  font-size: 11.5px;
+  white-space: nowrap;
+  cursor: pointer;
+  text-align: left;
+}
+
+.ribbon__small:hover:not(:disabled) {
+  background: #31343c;
+  border-color: #3c404b;
+}
+
+.ribbon__small:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.ribbon__small-icon {
+  display: flex;
+}
+
+.ribbon__small-icon svg {
+  width: 16px;
+  height: 16px;
+}
+
+.ribbon__snap {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 4px 4px 0 10px;
+  margin-left: 4px;
+  border-left: 1px solid #31343c;
+  font-size: 11.5px;
+  color: #d6d8de;
+}
+
+.ribbon__snap--off {
+  opacity: 0.45;
+}
+
+.ribbon__snap-title {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  color: #9da0a8;
+}
+
+.ribbon__check {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.ribbon__check select {
+  font-size: 11px;
+  padding: 0 2px;
+}
+
+.ribbon__menu-root {
+  position: relative;
+  display: flex;
+}
+
+.ribbon__label svg {
+  vertical-align: middle;
+}
+
+.ribbon__menu {
+  position: fixed;
+  z-index: 50;
+  width: 320px;
+  padding: 6px;
+  border: 1px solid #3c404b;
+  border-radius: 8px;
+  background: #23252b;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
+}
+
+.ribbon__menu-heading {
+  padding: 4px 8px 6px;
+  font-size: 10.5px;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: #7d808a;
+}
+
+.ribbon__menu-item {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: #e8e8ea;
+  text-align: left;
+  cursor: pointer;
+}
+
+.ribbon__menu-item:hover {
+  background: #31343c;
+  border-color: #3c404b;
+}
+
+.ribbon__menu-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+  font-size: 12.5px;
+}
+
+.ribbon__menu-tag {
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: rgba(74, 144, 217, 0.25);
+  color: #9cc6f0;
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.ribbon__menu-desc {
+  font-size: 11.5px;
+  line-height: 1.35;
+  color: #9da0a8;
 }

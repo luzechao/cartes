@@ -12,6 +12,9 @@ dist/
 # Preprocessed IDD output — regenerate with `npm run preprocess-idd`
 src/parser/idd-table.generated.ts
 
+# Simulation engine + Pyodide runtime, copied from node_modules by `predev`/`prebuild` (sim-engine-wasm-assets).
+public/sim-engine/
+
 # Raw EnergyPlus IDD files and example corpus — large, fetched not committed.
 # Regenerate with ./scripts/fetch-idd.sh and ./scripts/fetch-fixtures.sh
 idd-cache/

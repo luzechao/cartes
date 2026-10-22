@@ -24,6 +24,11 @@ EnergyPlus does:
   test/geometry/resolve.test.ts
                              a direct transcription of the same GetVertices loop
 
+The example models in public/examples/ (5ZoneAirCooled.idf,
+PythonPluginCustomOutputVariable.idf and .py, and the Chicago O'Hare TMY3 weather
+file) are unmodified copies of EnergyPlus version 26.1.0 software test and
+weather files.
+
 Those portions are provided under the following license:
 
 EnergyPlus, Copyright (c) 1996-present, The Board of Trustees of the University
