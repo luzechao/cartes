@@ -1,7 +1,7 @@
 /**
  * Shareable view state — Phase 9 of docs/05-implementation-plan.md.
  *
- * The camera, the selection, the colour mode and the storey display, as a URL fragment rather
+ * The camera, the selection, the color mode and the story display, as a URL fragment rather
  * than EPShape's copy-this-string. A fragment never leaves the browser (it is not sent to any
  * server), so the link carries a view, not the model: whoever opens it opens the same file and
  * sees what the sender saw.
@@ -11,7 +11,7 @@
  */
 
 export type ColorMode = 'type' | 'construction'
-export type DisplayState = { mode: 'stacked' } | { mode: 'exploded' } | { mode: 'solo'; storey: number }
+export type DisplayState = { mode: 'stacked' } | { mode: 'exploded' } | { mode: 'solo'; story: number }
 
 export interface ViewState {
   camera?: { position: [number, number, number]; target: [number, number, number] }
@@ -35,7 +35,7 @@ export function encodeViewState(state: ViewState): string {
   if (state.selected) p.set('sel', state.selected)
   if (state.colorBy && state.colorBy !== 'type') p.set('color', state.colorBy)
   if (state.display && state.display.mode !== 'stacked') {
-    p.set('display', state.display.mode === 'solo' ? `solo:${state.display.storey}` : state.display.mode)
+    p.set('display', state.display.mode === 'solo' ? `solo:${state.display.story}` : state.display.mode)
   }
   return p.toString()
 }
@@ -56,8 +56,8 @@ export function decodeViewState(fragment: string): ViewState {
   const display = p.get('display')
   if (display === 'exploded') out.display = { mode: 'exploded' }
   else if (display?.startsWith('solo:')) {
-    const storey = Number(display.slice(5))
-    if (Number.isInteger(storey) && storey >= 0) out.display = { mode: 'solo', storey }
+    const story = Number(display.slice(5))
+    if (Number.isInteger(story) && story >= 0) out.display = { mode: 'solo', story }
   }
   return out
 }

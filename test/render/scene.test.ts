@@ -271,7 +271,7 @@ describe('SceneRegistry', () => {
   })
 
   /**
-   * The indices exist so that "hide this zone" and "recolour every window" are one lookup
+   * The indices exist so that "hide this zone" and "recolor every window" are one lookup
    * rather than a walk over 8000 objects.
    */
   it('indexes by category and by zone without traversing the graph', () => {
@@ -460,11 +460,11 @@ describe('the fenestration nudge, on a mis-wound window', () => {
 })
 
 // ---------------------------------------------------------------------------
-// Colour
+// Color
 // ---------------------------------------------------------------------------
 
-describe('colour modes', () => {
-  it('colours by surface type by default', () => {
+describe('color modes', () => {
+  it('colors by surface type by default', () => {
     const { byName } = load('gate-world.idf')
     expect(colorOf(byName.get('WALL SOUTH')!)).toBe(SURFACE_TYPE_COLORS.wall)
     expect(colorOf(byName.get('FLOOR')!)).toBe(SURFACE_TYPE_COLORS.floor)
@@ -472,7 +472,7 @@ describe('colour modes', () => {
     expect(colorOf(byName.get('CARPORT')!)).toBe(SURFACE_TYPE_COLORS.shading)
   })
 
-  it('colours by construction on request, leaving shading on its own colour', () => {
+  it('colors by construction on request, leaving shading on its own color', () => {
     const model = buildModel(parseIdf(readFileSync(join(FIXTURES, 'gate-world.idf'), 'utf8')))
     const build = buildScene(model, resolveModel(model), { colorBy: 'construction' })
     const byName = new Map([...build.registry].map((e) => [e.name, e] as const))
@@ -488,7 +488,7 @@ describe('colour modes', () => {
    * A material per surface would be tens of thousands of them on a real model, each its own
    * shader program and draw-call state change, for a picture identical to the shared one.
    */
-  it('shares one material across every surface of a colour', () => {
+  it('shares one material across every surface of a color', () => {
     const { byName } = load('gate-world.idf')
     expect(byName.get('CARPORT')!.mesh.material).toBe(byName.get('NEIGHBOUR')!.mesh.material)
     expect(byName.get('WALL SOUTH')!.mesh.material).not.toBe(byName.get('FLOOR')!.mesh.material)

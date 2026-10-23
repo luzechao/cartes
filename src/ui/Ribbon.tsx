@@ -36,7 +36,7 @@ import {
   RunIcon,
   SelectIcon,
   SpinnerIcon,
-  StoreysIcon,
+  StoriesIcon,
   TreeIcon,
   UndoIcon,
   ValidationIcon,
@@ -76,7 +76,7 @@ export interface GeometryCommands {
   onToggleMatching: () => void
 
   editMode: EditMode
-  /** Editing needs storeys stacked in place; with them exploded or isolated, only Select is available. */
+  /** Editing needs stories stacked in place; with them exploded or isolated, only Select is available. */
   editLocked: boolean
   onEditMode: (mode: EditMode) => void
   snap: SnapSettings
@@ -93,9 +93,9 @@ export interface GeometryCommands {
 
   colorBy: ColorBy
   onColorByChange: (colorBy: ColorBy) => void
-  /** Present when the model has more than one storey. */
-  storeys: { value: string; options: Array<{ value: string; label: string }> } | undefined
-  onStoreys: (value: string) => void
+  /** Present when the model has more than one story. */
+  stories: { value: string; options: Array<{ value: string; label: string }> } | undefined
+  onStories: (value: string) => void
   onFit: () => void
   onShareLink: () => void
   onSaveImage: () => void
@@ -267,7 +267,7 @@ function GeometryTab(props: GeometryCommands & { hasModel: boolean }): React.JSX
             onClick={() => props.onEditMode(mode)}
             disabled={off || (mode !== 'off' && props.editLocked)}
             active={props.hasModel && props.editMode === mode}
-            title={mode !== 'off' && props.editLocked ? `${title} (stack the storeys first)` : title}
+            title={mode !== 'off' && props.editLocked ? `${title} (stack the stories first)` : title}
           />
         ))}
         <div className={`ribbon__snap${snapOff ? ' ribbon__snap--off' : ''}`} title="Snapping while editing">
@@ -339,21 +339,21 @@ function GeometryTab(props: GeometryCommands & { hasModel: boolean }): React.JSX
 
       <RibbonGroup label="View">
         <div className="ribbon__stack ribbon__stack--controls">
-          <label className="ribbon__select" title="Colour surfaces by">
+          <label className="ribbon__select" title="Color surfaces by">
             <PaletteIcon size={16} />
             <select value={props.colorBy} onChange={(e) => props.onColorByChange(e.target.value as ColorBy)}>
-              <option value="type">Colour by type</option>
-              <option value="construction">Colour by construction</option>
+              <option value="type">Color by type</option>
+              <option value="construction">Color by construction</option>
             </select>
           </label>
-          <label className="ribbon__select" title={props.storeys ? 'Pull storeys apart, or show one at a time' : 'Single-storey model'}>
-            <StoreysIcon size={16} />
+          <label className="ribbon__select" title={props.stories ? 'Pull stories apart, or show one at a time' : 'Single-story model'}>
+            <StoriesIcon size={16} />
             <select
-              disabled={!props.storeys}
-              value={props.storeys?.value ?? 'stacked'}
-              onChange={(e) => props.onStoreys(e.target.value)}
+              disabled={!props.stories}
+              value={props.stories?.value ?? 'stacked'}
+              onChange={(e) => props.onStories(e.target.value)}
             >
-              {(props.storeys?.options ?? [{ value: 'stacked', label: 'Storeys stacked' }]).map((o) => (
+              {(props.stories?.options ?? [{ value: 'stacked', label: 'Stories stacked' }]).map((o) => (
                 <option key={o.value} value={o.value}>
                   {o.label}
                 </option>

@@ -183,7 +183,7 @@ is still byte-identical after `buildModel` + `resolveModel`.
 three.js scene, scene registry, triangulation via earcut (with the project-to-plane-basis step
 from `03-idf-geometry.md` §Triangulation), fat-line edges, orbit/pan camera, render-on-demand.
 
-Colour by surface type and by construction. Hover metadata: name, construction, zone.
+Color by surface type and by construction. Hover metadata: name, construction, zone.
 
 **Gate:** EPShape parity. Load the same file in both and compare visually. Any discrepancy is
 a bug in ours until proven otherwise — with one expected exception: relative-coordinate files
@@ -371,7 +371,7 @@ a test harness, not a manual step.
 | `scripts/preprocess-idd.ts` | Adds `Daylighting:ReferencePoint` and `Output:IlluminanceMap` to the IDD subset, so zone translate reads them by name — across the 9.6 rename of `Zone Name` to `Zone or Space Name`. Regenerate with `npm run preprocess-idd`. |
 | `src/model/history.ts` | `EditHistory`: a transaction log at the Document layer. Captures each touched object's pre-state on first write and its post-state on commit; transactions nest by joining; `begin`/`end` bracket a gesture. Every public edit operation opens one, so each is exactly one undo step. |
 | `src/geometry/drag.ts` | The headless half of the gizmo. `planDrag` decides what moves (vertex mode: the vertex plus coincident vertices on *coplanar* surfaces; corner mode: `planCornerMove`), `DragSession` applies absolute-from-start updates through `snapPoint` on a constraint plane, `intersectRayPlane` and `nearestEdge` turn pointers into geometry. |
-| `src/render/scene.ts` `refreshSurfaces`, `src/render/viewer.ts` | Per-frame partial redraw of just the surfaces a drag touches; model-space rays; handles drawn over occluders and picked in screen space; a snap marker coloured by snap kind. |
+| `src/render/scene.ts` `refreshSurfaces`, `src/render/viewer.ts` | Per-frame partial redraw of just the surfaces a drag touches; model-space rays; handles drawn over occluders and picked in screen space; a snap marker colored by snap kind. |
 | `src/ui/App.tsx` | Select / Vertex / Corner modes, snap toggles and grid size, Move zone…, Delete (with a confirmation listing cascade, twins and dangling references, and an explicit choice for the twin), Undo / Redo. Inspector edits now rebuild the Model, so a typed vertex coordinate or zone origin shows up in the viewport. |
 | `test/geometry/vertex-count.test.ts` | Exact expected text for insert and delete in both vertex styles, permuted vertex orders, relative frames, caps, twins — and split-then-rejoin over every corpus surface. |
 | `test/geometry/eplus-vertex-count.test.ts`, `eplus-zone-translate.test.ts` | The EnergyPlus gates for the two new operations, each with its control. |
@@ -620,7 +620,7 @@ deliberately broken pairing, we propose the correct fix and propose nothing else
 `Adiabatic` boundary, left alone; 0 partial overlaps flagged; and **proposals on exactly one
 file** — the Phase 4 triaged defect in `ASHRAE901_OfficeLarge_STD2019_Denver_Chiller205_Detailed.idf`,
 where the matcher proposes precisely the two repointings that fix it (`Core_top_ZN_5_Wall_South`
-names `Core_bot_…` on the storey below while its coincident twin names it back). Applying them
+names `Core_bot_…` on the story below while its coincident twin names it back). Applying them
 takes our validator's four `boundary-asymmetric` errors to zero, and a second run proposes
 nothing. EnergyPlus cannot arbitrate this one: the file needs an external ASHRAE 205 `.cbor`.
 
@@ -780,7 +780,7 @@ exercised through the protocol and as a real stdio process.
 - ✅ Shareable view state — URL-encoded rather than EPShape's clipboard string.
 - ✅ Screenshot / image export.
 - ✅ Exploded and stacked zone display modes (borrowed from Pascal's level display modes;
-  genuinely useful for multi-storey review), plus one storey alone.
+  genuinely useful for multi-story review), plus one story alone.
 - ✅ Tier-3 simple-class → detailed conversion, as an **explicit user action**, never automatic.
 - ✅ An MCP server, so an LLM can drive the model. A protocol, not a framework.
 
@@ -790,13 +790,13 @@ exercised through the protocol and as a real stdio process.
 |---|---|
 | `src/geometry/tier3.ts` | `planTier3Conversion` / `applyTier3Conversion` for all 22 simplified classes — rectangular base surfaces, windows and doors (plain and interzone), site and building shading, overhangs and fins (plain and projection). A transcription of EnergyPlus 26.1's `GetRectSurfaces`, `MakeRectangularVertices`, `GetRectSubSurfaces`, `MakeRelativeRectangularVertices`, `GetRectDetShdSurfaceData`, `GetSimpleShdSurfaceData` and `DetermineAzimuthAndTilt`, quirks included. Hosts may be simplified or detailed. Names are kept; each new object replaces the old one in place; one undo step; refusals and behaviour changes listed before anything is written. |
 | `src/model/delete.ts` `removeObjects` | Removal without referential checks, for callers that keep references right themselves. |
-| `src/render/storeys.ts` | `computeStoreys` (zones grouped by floor elevation, 0.5 m tolerance for split levels), `applyStoreyDisplay` (stacked / exploded / solo, as a transform on the scene graph), `explodeGap`. Headless. |
-| `src/render/viewer.ts` | `setStoreyDisplay`, `getCamera` / `setCamera` / `onCameraChange`, and `snapshot()` — a PNG of the view with editing overlays hidden, rendered and read back in one call so the drawing buffer need not be preserved. |
-| `src/ui/viewState.ts` | The URL fragment codec: camera, selection by name, colour mode, storey display. Total decoding — malformed fields are dropped, never thrown. |
-| `src/ui/App.tsx` | **Convert to detailed…** on the "not drawn" footer and the all-simplified empty state; **Storeys** selector (editing disabled while storeys are moved or hidden); **Link** (clipboard, or a dialog when the clipboard is refused); **Image**. The address bar always holds the current view; a link's view is applied to the first file opened after page load and never again. |
+| `src/render/stories.ts` | `computeStories` (zones grouped by floor elevation, 0.5 m tolerance for split levels), `applyStoryDisplay` (stacked / exploded / solo, as a transform on the scene graph), `explodeGap`. Headless. |
+| `src/render/viewer.ts` | `setStoryDisplay`, `getCamera` / `setCamera` / `onCameraChange`, and `snapshot()` — a PNG of the view with editing overlays hidden, rendered and read back in one call so the drawing buffer need not be preserved. |
+| `src/ui/viewState.ts` | The URL fragment codec: camera, selection by name, color mode, story display. Total decoding — malformed fields are dropped, never thrown. |
+| `src/ui/App.tsx` | **Convert to detailed…** on the "not drawn" footer and the all-simplified empty state; **Stories** selector (editing disabled while stories are moved or hidden); **Link** (clipboard, or a dialog when the clipboard is refused); **Image**. The address bar always holds the current view; a link's view is applied to the first file opened after page load and never again. |
 | `src/mcp/session.ts`, `src/mcp/server.ts`, `scripts/mcp-server.ts` | `ModelSession` — every UI operation, addressed by name, returning JSON, on the same undo history — and 19 MCP tools over it (`npm run mcp`). Deliberate refusals come back as tool errors carrying the reason; nothing is written until `save_idf`, and only to `.idf`. |
 | `test/geometry/eplus-tier3.test.ts` | The conversion gate, with EnergyPlus's own surface report as the oracle. |
-| `test/geometry/tier3.test.ts`, `test/render/storeys.test.ts`, `test/mcp/server.test.ts` | Arithmetic by hand, the corpus pass, storeys and the view codec, and the MCP server through a real client. |
+| `test/geometry/tier3.test.ts`, `test/render/stories.test.ts`, `test/mcp/server.test.ts` | Arithmetic by hand, the corpus pass, stories and the view codec, and the MCP server through a real client. |
 
 ### Gate outcomes — measured
 
@@ -826,13 +826,13 @@ reveals.
 
 **The UI, in a browser.** `4ZoneWithShading_Simple_1.idf` opened to an empty stage offering
 conversion. The dialog listed all 14 classes with counts and the `Ceiling:Interzone`
-consequence; afterwards there were 45 surfaces and two storeys. Stacked, exploded and "storey 2
+consequence; afterwards there were 45 surfaces and two stories. Stacked, exploded and "story 2
 only" were rendered by the app's own `snapshot()` — the Image feature — and are what they
-should be. A link sent with an orbited camera, a selected surface, construction colouring and
-exploded storeys was opened fresh with the same file and restored all four: camera to the
+should be. A link sent with an orbited camera, a selected surface, construction coloring and
+exploded stories was opened fresh with the same file and restored all four: camera to the
 millimetre, `C1-1` in the inspector. A second file in that session fitted its own view.
 
-**The MCP server**, through a real MCP client: 19 tools listed with schemas. A two-storey model
+**The MCP server**, through a real MCP client: 19 tools listed with schemas. A two-story model
 was authored entirely by tool calls — three zones, two proposals applied, three windows, an
 interzone door made on both sides — with undo and redo in between. Validation came back empty,
 and the saved file **runs in EnergyPlus with no severe and no warning**, at 30/20/30 m² and
@@ -961,7 +961,7 @@ outcomes.
     conventions and through the browser. **Green: 654 tests. Phase 8 complete.**
 
 18. ✅ Polish and reach: Tier-3 → detailed conversion (gated against EnergyPlus's own surface
-    report in 12 variants, 470 corpus objects converted), exploded/solo storey display, shareable
+    report in 12 variants, 470 corpus objects converted), exploded/solo story display, shareable
     view links, image export, and an MCP server of 19 tools that authored a model EnergyPlus runs
     clean. **Green: 685 tests. Phase 9 complete — the plan is done.**
 

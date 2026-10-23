@@ -95,7 +95,7 @@ Directly visible from the class list above — it extracts only five classes. Co
   `##EPShpSttgs##;zv:0;sh:1;et:-1;hm:2;cp:8.6/8.4/2.3;` with `ctrl+shift+c` / `ctrl+shift+v`.
   Cheap, effective way to share a view without a backend. Consider URL-encoding instead.
 - **Visibility model.** Zones toggled individually, by height range, or both; hidden objects
-  render as `disable` / `wireframe` / `ghost` rather than vanishing. Colour by surface type or
+  render as `disable` / `wireframe` / `ghost` rather than vanishing. Color by surface type or
   by construction. This is the right vocabulary for BEM review work.
 - **Hover metadata** — name, construction, zone on mouseover. Table stakes.
 - **`?mult=1.5` URL parameter** scales viewport resolution. Trivial, useful for screenshots.
@@ -261,7 +261,7 @@ declarative inspector driven by that same table gives us a property editor for *
 object class, for free** — including ones we do not render. Strong idea, directly applicable.
 
 **7. Level display modes** — stacked / exploded / solo. Exploded-axonometric is genuinely
-useful for inspecting multi-storey thermal zones. Cheap to implement, high review value.
+useful for inspecting multi-story thermal zones. Cheap to implement, high review value.
 
 ### Patterns to avoid
 

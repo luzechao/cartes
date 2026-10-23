@@ -258,10 +258,10 @@ export function refreshSurfaces(
 }
 
 /**
- * Recolour in place.
+ * Recolor in place.
  *
- * Switching the colour mode swaps materials on existing meshes rather than rebuilding the
- * scene: geometry is the expensive part, colour is not, and rebuilding would drop selection
+ * Switching the color mode swaps materials on existing meshes rather than rebuilding the
+ * scene: geometry is the expensive part, color is not, and rebuilding would drop selection
  * and camera-relative state for a change that is purely cosmetic.
  */
 export function applyColorBy(

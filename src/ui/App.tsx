@@ -59,7 +59,7 @@ import {
   type ValidationIssue,
   type ValidationReport,
 } from '../geometry/index.js'
-import { buildScene, computeStoreys, Viewer, type ColorBy, type HoverInfo, type StoreyDisplay } from '../render/index.js'
+import { buildScene, computeStories, Viewer, type ColorBy, type HoverInfo, type StoryDisplay } from '../render/index.js'
 import { ObjectTree } from './ObjectTree.js'
 import { Inspector } from './Inspector.js'
 import { DiffPanel } from './DiffPanel.js'
@@ -243,16 +243,16 @@ export function App(): React.JSX.Element {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [loaded?.originalSource])
 
-  const storeys = useMemo(() => (loaded ? computeStoreys(loaded.model, loaded.resolved) : undefined), [loaded])
+  const stories = useMemo(() => (loaded ? computeStories(loaded.model, loaded.resolved) : undefined), [loaded])
 
-  // Storey display follows the model: after an edit rebuilds the scene, it is reapplied.
+  // Story display follows the model: after an edit rebuilds the scene, it is reapplied.
   useEffect(() => {
     const viewer = viewerRef.current
-    if (!viewer || !storeys) return
-    const d: StoreyDisplay =
-      display.mode === 'solo' && display.storey >= storeys.storeys.length ? { mode: 'stacked' } : display
-    viewer.setStoreyDisplay(storeys, d)
-  }, [storeys, display, stats])
+    if (!viewer || !stories) return
+    const d: StoryDisplay =
+      display.mode === 'solo' && display.story >= stories.stories.length ? { mode: 'stacked' } : display
+    viewer.setStoryDisplay(stories, d)
+  }, [stories, display, stats])
 
   // Keep the URL fragment describing the current view, so the address bar is always a share link.
   useEffect(() => {
@@ -1058,11 +1058,11 @@ export function App(): React.JSX.Element {
     )
   }
 
-  const chooseStoreys = (value: string): void => {
+  const chooseStories = (value: string): void => {
     const next: DisplayState =
-      value === 'exploded' ? { mode: 'exploded' } : value.startsWith('solo:') ? { mode: 'solo', storey: Number(value.slice(5)) } : { mode: 'stacked' }
+      value === 'exploded' ? { mode: 'exploded' } : value.startsWith('solo:') ? { mode: 'solo', story: Number(value.slice(5)) } : { mode: 'stacked' }
     setDisplay(next)
-    // Editing works in the model's own frame; with storeys moved or hidden it would not.
+    // Editing works in the model's own frame; with stories moved or hidden it would not.
     if (next.mode !== 'stacked') {
       setEditMode('off')
       setActiveHandle(undefined)
@@ -1147,21 +1147,21 @@ export function App(): React.JSX.Element {
           onDelete: () => void deleteSelection(),
           colorBy,
           onColorByChange: setColorBy,
-          storeys:
-            loaded && storeys && storeys.storeys.length > 1
+          stories:
+            loaded && stories && stories.stories.length > 1
               ? {
-                  value: display.mode === 'solo' ? `solo:${display.storey}` : display.mode,
+                  value: display.mode === 'solo' ? `solo:${display.story}` : display.mode,
                   options: [
-                    { value: 'stacked', label: 'Storeys stacked' },
-                    { value: 'exploded', label: 'Storeys exploded' },
-                    ...storeys.storeys.map((st) => ({
+                    { value: 'stacked', label: 'Stories stacked' },
+                    { value: 'exploded', label: 'Stories exploded' },
+                    ...stories.stories.map((st) => ({
                       value: `solo:${st.index}`,
-                      label: `Storey ${st.index + 1} only (z ${+st.z.toFixed(2)} m, ${st.zoneIds.length} zone${st.zoneIds.length === 1 ? '' : 's'})`,
+                      label: `Story ${st.index + 1} only (z ${+st.z.toFixed(2)} m, ${st.zoneIds.length} zone${st.zoneIds.length === 1 ? '' : 's'})`,
                     })),
                   ],
                 }
               : undefined,
-          onStoreys: chooseStoreys,
+          onStories: chooseStories,
           onFit: () => viewerRef.current?.fit(),
           onShareLink: () => void shareView(),
           onSaveImage: saveImage,

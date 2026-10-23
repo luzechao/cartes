@@ -1,12 +1,12 @@
 /**
- * Colour — the "colour by surface type / by construction" half of Phase 3.
+ * Color — the "color by surface type / by construction" half of Phase 3.
  *
  * Pure data and pure functions, no three.js scene objects, so the mapping can be tested
  * without a GPU and reused by the legend in Layer 5.
  *
  * The surface-type palette follows the OpenStudio convention rather than inventing one.
  * Anyone doing BEM review has spent years looking at tan walls, grey floors and brick-red
- * roofs; a viewer that recolours them is harder to read even if the new colours are prettier.
+ * roofs; a viewer that recolors them is harder to read even if the new colors are prettier.
  */
 import { Color } from 'three'
 import type { Surface } from '../model/index.js'
@@ -71,7 +71,7 @@ const SUB_CATEGORY: Readonly<Record<string, SurfaceCategory>> = {
   tubulardaylightdiffuser: 'window',
 }
 
-/** The display category of a surface. All three shading kinds share one colour. */
+/** The display category of a surface. All three shading kinds share one color. */
 export function surfaceCategory(surface: Surface): SurfaceCategory {
   if (surface.kind === 'shading') return 'shading'
   const table = surface.kind === 'base' ? BASE_CATEGORY : SUB_CATEGORY
@@ -79,12 +79,12 @@ export function surfaceCategory(surface: Surface): SurfaceCategory {
 }
 
 /**
- * A stable colour for a construction name.
+ * A stable color for a construction name.
  *
  * Hashed from the name rather than assigned by position in a sorted list, so a construction's
- * colour does not shift when an unrelated one is added or deleted — with a live-editing tool
- * the whole model changing colour on an edit is disorienting and looks like a bug. The cost
- * is that two constructions can collide on a similar hue; the legend, not the colour, is what
+ * color does not shift when an unrelated one is added or deleted — with a live-editing tool
+ * the whole model changing color on an edit is disorienting and looks like a bug. The cost
+ * is that two constructions can collide on a similar hue; the legend, not the color, is what
  * identifies them.
  *
  * Saturation and lightness are fixed mid-range so nothing lands on white (invisible against

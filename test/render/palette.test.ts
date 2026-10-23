@@ -1,9 +1,9 @@
 /**
- * Colour mapping — the "colour by surface type and by construction" half of Phase 3.
+ * Color mapping — the "color by surface type and by construction" half of Phase 3.
  *
  * Pure data, so it is tested pure. The interesting assertions are the ones about *stability*:
- * a construction's colour must not depend on what other constructions exist, or the whole
- * model changes colour when you add a wall type and it looks like a bug.
+ * a construction's color must not depend on what other constructions exist, or the whole
+ * model changes color when you add a wall type and it looks like a bug.
  */
 import { describe, expect, it } from 'vitest'
 import type { Surface } from '../../src/model/index.js'
@@ -103,7 +103,7 @@ describe('surfaceCategory', () => {
     }
   })
 
-  it('gives all three shading kinds one colour', () => {
+  it('gives all three shading kinds one color', () => {
     for (const kind of ['site', 'building', 'zone'] as const) {
       expect(surfaceCategory(shading(kind)), kind).toBe('shading')
     }
@@ -124,7 +124,7 @@ describe('surfaceCategory', () => {
     expect(surfaceCategory(base('Bulkhead'))).toBe('other')
   })
 
-  it('has a colour for every category it can return', () => {
+  it('has a color for every category it can return', () => {
     const categories: SurfaceCategory[] = [
       'wall',
       'floor',
@@ -159,7 +159,7 @@ describe('constructionColor', () => {
     expect([after[1], after[2], after[3]]).toEqual(before)
   })
 
-  it('spreads a realistic construction list over distinct colours', () => {
+  it('spreads a realistic construction list over distinct colors', () => {
     const names = [
       'Exterior Wall',
       'Interior Wall',
@@ -185,7 +185,7 @@ describe('constructionColor', () => {
    * background and one hashing to black is invisible against its own edges — either reads as
    * "the surface failed to load".
    */
-  it('never lands on a colour that disappears against the background or the edges', () => {
+  it('never lands on a color that disappears against the background or the edges', () => {
     for (let i = 0; i < 500; i++) {
       const hex = constructionColor(`Construction ${i}`)
       const r = (hex >> 16) & 0xff

@@ -32,7 +32,7 @@ import {
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import type { SceneBuild } from './scene.js'
 import { applyColorBy, refreshSurfaces, type ColorBy } from './scene.js'
-import { applyStoreyDisplay, type StoreyDisplay, type StoreyMap } from './storeys.js'
+import { applyStoryDisplay, type StoryDisplay, type StoryMap } from './stories.js'
 import type { SceneEntry } from './registry.js'
 import type { Model, Vec3 } from '../model/index.js'
 import type { ResolvedSurface } from '../geometry/index.js'
@@ -392,7 +392,7 @@ export class Viewer {
     return best
   }
 
-  /** Show where a drag snapped to, coloured by what it snapped to. Undefined hides it. */
+  /** Show where a drag snapped to, colored by what it snapped to. Undefined hides it. */
   setMarker(point: Vec3 | undefined, kind: MarkerKind = 'vertex'): void {
     ;(this.marker.material as PointsMaterial).color.setHex(MARKER_COLORS[kind])
     setPoints(this.marker, point ? [point] : [])
@@ -442,10 +442,10 @@ export class Viewer {
     if (selected && build.registry.get(selected)) this.select(selected)
   }
 
-  /** Pull storeys apart, or show one alone. See `storeys.ts`. */
-  setStoreyDisplay(map: StoreyMap, display: StoreyDisplay): void {
+  /** Pull stories apart, or show one alone. See `stories.ts`. */
+  setStoryDisplay(map: StoryMap, display: StoryDisplay): void {
     if (!this.build) return
-    applyStoreyDisplay(this.build, map, display)
+    applyStoryDisplay(this.build, map, display)
     this.requestRender()
   }
 

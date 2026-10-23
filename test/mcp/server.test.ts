@@ -80,7 +80,7 @@ describe('MCP server', () => {
     expect(await call(client, 'inspect', { name: 'Nope' })).toMatchObject({ isError: true, text: "No object named 'Nope'." })
   })
 
-  it('authors a two-storey model end to end, and EnergyPlus runs the saved file', async () => {
+  it('authors a two-story model end to end, and EnergyPlus runs the saved file', async () => {
     const client = await connect()
     await call(client, 'new_model')
     for (const [name, fp, z] of [

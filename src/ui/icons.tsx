@@ -1,5 +1,5 @@
 /**
- * Ribbon icons: 24×24, stroke-only, drawn with `currentColor` so they follow the button's text colour.
+ * Ribbon icons: 24×24, stroke-only, drawn with `currentColor` so they follow the button's text color.
  */
 import type { SVGProps } from 'react'
 
@@ -342,8 +342,8 @@ export function ImageIcon(props: IconProps): React.JSX.Element {
   )
 }
 
-/** Three stacked slabs: storeys. */
-export function StoreysIcon(props: IconProps): React.JSX.Element {
+/** Three stacked slabs: stories. */
+export function StoriesIcon(props: IconProps): React.JSX.Element {
   return (
     <Svg {...props}>
       <path d="m12 3 9 4-9 4-9-4z" />

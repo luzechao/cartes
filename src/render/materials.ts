@@ -1,10 +1,10 @@
 /**
  * Shared materials.
  *
- * A model with 8000 surfaces has, at most, a few dozen distinct colours — nine surface types
+ * A model with 8000 surfaces has, at most, a few dozen distinct colors — nine surface types
  * or a construction list a page long. Giving each surface its own material would multiply
  * draw calls and shader compiles by three orders of magnitude for no visual difference, so
- * materials are cached by colour and shared.
+ * materials are cached by color and shared.
  *
  * The cache owns them, which is why `SceneRegistry.dispose` deliberately does not.
  */

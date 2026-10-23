@@ -13,8 +13,8 @@ Open an existing `.idf`, see its geometry in 3D, edit it, simulate it, and write
 
 - **Lossless round-trip.** Any IDF comes back byte-for-byte; an edit changes only the bytes it
   should.
-- **3D view.** Shows world and relative coordinates correctly. Colour by surface type or
-  construction, pull storeys apart or show one at a time, share a view as a link, save it as an
+- **3D view.** Shows world and relative coordinates correctly. Color by surface type or
+  construction, pull stories apart or show one at a time, share a view as a link, save it as an
   image.
 - **Validation as EnergyPlus does it.** The enclosure and upside-down checks agree with
   EnergyPlus on every case measured.
@@ -141,7 +141,7 @@ history. Nothing is written to disk until `save_idf` is called.
 | `src/parser/` | Lossless IDF parser and emitter, IDD field table |
 | `src/model/` | Building model over the document: names, references, edits, undo history, templates |
 | `src/geometry/` | Coordinate resolution, validation, snapping, dragging, creation, matching, tier-3 conversion |
-| `src/render/` | three.js scene, viewer and storey display |
+| `src/render/` | three.js scene, viewer and story display |
 | `src/simulate/` | Simulation engine (`engine.ts`), its Web Worker (`worker.ts`) and the UI's client (`client.ts`) |
 | `src/ui/` | React shell: ribbon (`Ribbon.tsx`, `icons.tsx`), panels, dialogs, examples |
 | `src/mcp/` | MCP server and session |

@@ -176,7 +176,7 @@ validation report, raw-IDF text view with live diff, visibility controls.
 
 **Take EPShape's visibility vocabulary wholesale** — it is well-judged for BEM review work:
 zones toggled individually, by height range, or both; hidden objects render as `disable` /
-`wireframe` / `ghost` rather than vanishing; colour by surface type or by construction.
+`wireframe` / `ghost` rather than vanishing; color by surface type or by construction.
 
 **Take the live IDF diff idea from VI-Suite** (which loads its output back into Blender's text
 editor). Showing the user exactly which text changed is the single best trust-building

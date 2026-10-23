@@ -72,7 +72,7 @@ cannot use it. We parse IDF text. Revisit if a local process is ever in scope.
 | `GlobalGeometryRules` | **Governs interpretation of every vertex in the file.** |
 | `Building` | Carries `North Axis`, which rotates relative coordinates. |
 | `Compliance:Building` | Carries `Building Rotation for Appendix G` — **rotates geometry even in World coordinates.** |
-| `Construction` | Needed for colour-by-construction and validation. |
+| `Construction` | Needed for color-by-construction and validation. |
 
 ### Tier 2 — alternate detailed (v1: preserve verbatim, render if cheap)
 

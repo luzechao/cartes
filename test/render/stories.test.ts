@@ -2,10 +2,10 @@ import { describe, expect, it } from 'vitest'
 import { emitIdf, parseIdf } from '../../src/parser/index.js'
 import { buildModel, LATEST_IDD_VERSION, newModelSource, TEMPLATE_CONSTRUCTIONS as C } from '../../src/model/index.js'
 import { extrudeZone, resolveModel } from '../../src/geometry/index.js'
-import { applyStoreyDisplay, buildScene, computeStoreys, explodeGap } from '../../src/render/index.js'
+import { applyStoryDisplay, buildScene, computeStories, explodeGap } from '../../src/render/index.js'
 import { decodeViewState, encodeViewState } from '../../src/ui/viewState.js'
 
-/** Two storeys: two zones on the ground, one split-level 0.3 m up, and one on top. */
+/** Two stories: two zones on the ground, one split-level 0.3 m up, and one on top. */
 function building() {
   let doc = parseIdf(newModelSource(LATEST_IDD_VERSION))
   let model = buildModel(doc)
@@ -39,11 +39,11 @@ function zoneNamed(model: ReturnType<typeof building>['model'], name: string): s
   throw new Error(name)
 }
 
-describe('computeStoreys', () => {
+describe('computeStories', () => {
   it('groups zones by floor elevation, with a tolerance for split levels', () => {
     const { model, resolved } = building()
-    const map = computeStoreys(model, resolved)
-    expect(map.storeys.map((s) => [s.z, s.zoneIds.map((id) => model.zones.get(id)!.name).sort()])).toEqual([
+    const map = computeStories(model, resolved)
+    expect(map.stories.map((s) => [s.z, s.zoneIds.map((id) => model.zones.get(id)!.name).sort()])).toEqual([
       [0, ['A', 'B', 'Split']],
       [3.5, ['Up']],
     ])
@@ -51,26 +51,26 @@ describe('computeStoreys', () => {
   })
 })
 
-describe('applyStoreyDisplay', () => {
-  it('lifts each storey by its index × the gap, leaves detached shading alone, and restores', () => {
+describe('applyStoryDisplay', () => {
+  it('lifts each story by its index × the gap, leaves detached shading alone, and restores', () => {
     const { model, resolved } = building()
-    const map = computeStoreys(model, resolved)
+    const map = computeStories(model, resolved)
     const build = buildScene(model, resolved)
     const up = zoneNamed(model, 'Up')
 
-    applyStoreyDisplay(build, map, { mode: 'exploded', gap: 4 })
+    applyStoryDisplay(build, map, { mode: 'exploded', gap: 4 })
     for (const e of build.registry) {
       expect(e.object.position.z, e.name).toBe(e.zoneId === up ? 4 : 0)
       expect(e.object.visible).toBe(true)
     }
 
-    applyStoreyDisplay(build, map, { mode: 'solo', storey: 1 })
+    applyStoryDisplay(build, map, { mode: 'solo', story: 1 })
     for (const e of build.registry) {
       expect(e.object.visible, e.name).toBe(e.zoneId === up)
       expect(e.object.position.z).toBe(0)
     }
 
-    applyStoreyDisplay(build, map, { mode: 'stacked' })
+    applyStoryDisplay(build, map, { mode: 'stacked' })
     for (const e of build.registry) {
       expect(e.object.visible).toBe(true)
       expect(e.object.position.z).toBe(0)
@@ -84,7 +84,7 @@ describe('view state', () => {
       camera: { position: [12.3456, -7, 30] as [number, number, number], target: [1, 2, 3] as [number, number, number] },
       selected: 'Zn001:Wall 1 & co',
       colorBy: 'construction' as const,
-      display: { mode: 'solo' as const, storey: 2 },
+      display: { mode: 'solo' as const, story: 2 },
     }
     const decoded = decodeViewState('#' + encodeViewState(state))
     expect(decoded).toEqual({ ...state, camera: { position: [12.346, -7, 30], target: [1, 2, 3] } })

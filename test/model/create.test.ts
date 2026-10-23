@@ -100,6 +100,6 @@ Zone,
 describe('valuesByName', () => {
   it('fills by IDD field name, blank between, and refuses a field the class does not have', () => {
     expect(valuesByName('zone', '26.1', { Name: 'Z', 'Y Origin': '2' })).toEqual(['Z', '', '', '2'])
-    expect(() => valuesByName('zone', '26.1', { Colour: 'red' })).toThrow(/no field 'Colour'/)
+    expect(() => valuesByName('zone', '26.1', { Color: 'red' })).toThrow(/no field 'Color'/)
   })
 })

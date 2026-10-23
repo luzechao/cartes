@@ -41,7 +41,7 @@ const corpus = listCorpus()
  * The one shipped file the matcher proposes changes to, and exactly what it proposes.
  *
  * Triaged in Phase 4 as a real defect: two walls name the wrong twin — `Core_top_ZN_5_Wall_South`
- * names `Core_bot_…` (the storey below) while its coincident twin names it back. The matcher
+ * names `Core_bot_…` (the story below) while its coincident twin names it back. The matcher
  * repoints each to the surface it actually touches, and our validator's four
  * `boundary-asymmetric` errors on the file go to zero. EnergyPlus cannot arbitrate: the file needs
  * an external ASHRAE 205 `.cbor` representation to run at all.

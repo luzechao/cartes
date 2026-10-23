@@ -4,7 +4,7 @@
  * A two-way map between document object ids and the `Object3D`s that draw them, plus
  * category and zone indices. The point is that **picking, selection and visibility never
  * traverse the scene graph**: a raycast hit is one map lookup, "hide zone 3" is one array,
- * and "recolour every window" does not walk 8000 objects to find 400.
+ * and "recolor every window" does not walk 8000 objects to find 400.
  *
  * The registry owns nothing it did not receive. `dispose` releases the GPU resources of the
  * geometries and the meshes' own materials; shared materials belong to the material cache.
