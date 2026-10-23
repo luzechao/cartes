@@ -113,6 +113,41 @@ export type FieldInput = string | number
 /** Field issues returned by `validate` beyond this many are counted, not listed. */
 const MAX_FIELD_ISSUES = 150
 
+/**
+ * Internal loads and air flows, by class: the field holding the calculation method, and the
+ * offset after it of the field each method reads. Offsets rather than names, because the names
+ * changed across releases (`watts_per_zone_floor_area` became `watts_per_floor_area` in 22.x)
+ * while the layout did not.
+ */
+const LOAD_CLASSES: Record<string, Record<string, number>> = {
+  People: { people: 1, 'people/area': 2, 'area/person': 3 },
+  Lights: { lightinglevel: 1, 'watts/area': 2, 'watts/person': 3 },
+  ElectricEquipment: { equipmentlevel: 1, 'watts/area': 2, 'watts/person': 3 },
+  GasEquipment: { equipmentlevel: 1, 'watts/area': 2, 'power/area': 2, 'watts/person': 3, 'power/person': 3 },
+  HotWaterEquipment: { equipmentlevel: 1, 'watts/area': 2, 'power/area': 2, 'watts/person': 3, 'power/person': 3 },
+  SteamEquipment: { equipmentlevel: 1, 'watts/area': 2, 'power/area': 2, 'watts/person': 3, 'power/person': 3 },
+  OtherEquipment: { equipmentlevel: 1, 'watts/area': 2, 'power/area': 2, 'watts/person': 3, 'power/person': 3 },
+  'ZoneInfiltration:DesignFlowRate': { 'flow/zone': 1, 'flow/area': 2, 'flow/exteriorarea': 3, 'flow/exteriorwallarea': 3, 'airchanges/hour': 4 },
+  'ZoneVentilation:DesignFlowRate': { 'flow/zone': 1, 'flow/area': 2, 'flow/person': 3, 'airchanges/hour': 4 },
+}
+
+/** Methods whose value is a per-floor-area density, and those whose value is its inverse. */
+const PER_AREA = new Set(['people/area', 'watts/area', 'power/area', 'flow/area'])
+const ABSOLUTE = new Set(['people', 'lightinglevel', 'equipmentlevel', 'flow/zone'])
+
+export interface LoadEntry {
+  class: string
+  name: string
+  /** The zone, zone list or space it applies to. */
+  target: string
+  schedule: string
+  method: string
+  value: number | string
+  units: string
+  /** The load per m2 of the target's floor area, when it can be worked out. */
+  perFloorArea?: { value: number; units: string }
+}
+
 interface Referrer {
   id: string
   className: string
@@ -371,13 +406,7 @@ export class ModelSession {
   updateObject(object: string, fields: Record<string, FieldInput>, className?: string): { object: string; changed: string[] } {
     const o = this.need()
     const obj = this.objectNamed(object, className)
-    const writes = Object.entries(fields).map(([field, value]) => {
-      const index = this.fieldIndexOf(obj, /^\d+$/.test(field) ? Number(field) : field)
-      if (index === 0 && this.isNamed(obj)) throw new SessionError('Use rename_object to change a name, so references follow it.')
-      return { index, value: String(value), problem: this.valueProblemAt(obj, index, value) }
-    })
-    const problems = writes.filter((w) => w.problem).map((w) => `${this.fieldLabel(obj, w.index)} ${w.problem}`)
-    if (problems.length) throw new SessionError(`Nothing changed: ${problems.join('; ')}.`)
+    const writes = this.planWrites(obj, fields)
     const changed: string[] = []
     o.history.transact(`Update ${obj.className}`, () => {
       for (const w of writes) if (setFieldValue(o.doc, o.model, obj.id, w.index, w.value)) changed.push(this.fieldLabel(obj, w.index))
@@ -456,6 +485,305 @@ export class ModelSession {
     this.labelFields(id)
     this.rebuild()
     return { created: this.describeObject(o.doc.objects.get(id)!), fields: values.length }
+  }
+
+  // --- simulation settings, loads, outputs ------------------------------------------
+
+  /** Time step, run periods, SimulationControl, location and design days, as the file has them. */
+  simulationSettings(): {
+    timestep: number | null
+    runPeriods: Array<Record<string, string>>
+    simulationControl: Record<string, string> | null
+    location: Record<string, string> | null
+    designDays: string[]
+  } {
+    const all = (cls: string): IdfObject[] =>
+      (this.need().doc.byClass.get(cls.toLowerCase()) ?? []).map((id) => this.need().doc.objects.get(id)!).filter(Boolean)
+    const ts = all('Timestep')[0]
+    const control = all('SimulationControl')[0]
+    const location = all('Site:Location')[0]
+    return {
+      timestep: ts ? Number(ts.fields[0]?.value ?? '') || null : null,
+      runPeriods: all('RunPeriod').map((o) => this.fieldsByKey(o)),
+      simulationControl: control ? this.fieldsByKey(control) : null,
+      location: location ? this.fieldsByKey(location) : null,
+      designDays: all('SizingPeriod:DesignDay').map((o) => o.fields[0]?.value ?? ''),
+    }
+  }
+
+  /**
+   * Change the time step, a run period's dates and SimulationControl flags, as one undo step.
+   * A missing Timestep or RunPeriod is created.
+   */
+  setSimulationSettings(args: {
+    timestep?: number | undefined
+    runPeriod?:
+      | { name?: string | undefined; beginMonth: number; beginDay: number; endMonth: number; endDay: number }
+      | undefined
+    simulationControl?: Record<string, FieldInput> | undefined
+  }): { changed: string[] } {
+    const o = this.need()
+    const schema = this.needSchema()
+    const changed: string[] = []
+    if (args.timestep !== undefined && (!Number.isInteger(args.timestep) || args.timestep < 1 || 60 % args.timestep !== 0)) {
+      throw new SessionError('The time step must be a whole number of steps per hour that divides 60 (1, 2, 3, 4, 5, 6, 10, 12, 15, 20, 30 or 60).')
+    }
+    const rp = args.runPeriod
+    if (rp) {
+      const days = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+      for (const [m, d] of [
+        [rp.beginMonth, rp.beginDay],
+        [rp.endMonth, rp.endDay],
+      ] as const) {
+        if (!Number.isInteger(m) || m < 1 || m > 12 || !Number.isInteger(d) || d < 1 || d > days[m - 1]!) {
+          throw new SessionError(`${m}/${d} is not a date.`)
+        }
+      }
+    }
+    const one = (cls: string): IdfObject | undefined => {
+      const id = o.doc.byClass.get(cls.toLowerCase())?.[0]
+      return id ? o.doc.objects.get(id) : undefined
+    }
+    const control = args.simulationControl && Object.keys(args.simulationControl).length ? one('SimulationControl') : undefined
+    if (args.simulationControl && Object.keys(args.simulationControl).length && !control) {
+      throw new SessionError('The file has no SimulationControl; add one with add_object.')
+    }
+    const controlWrites = control ? this.planWrites(control, args.simulationControl!) : []
+    let period: IdfObject | undefined
+    if (rp) {
+      const periods = (o.doc.byClass.get('runperiod') ?? []).map((id) => o.doc.objects.get(id)!)
+      period = rp.name ? periods.find((p) => p.fields[0]?.value.trim().toLowerCase() === rp.name!.trim().toLowerCase()) : periods[0]
+      if (rp.name && !period && periods.length) throw new SessionError(`No RunPeriod named '${rp.name}'.`)
+      if (!rp.name && periods.length > 1) throw new SessionError(`The file has ${periods.length} run periods; name the one to change.`)
+    }
+
+    o.history.transact('Simulation settings', () => {
+      if (args.timestep !== undefined) {
+        const ts = one('Timestep')
+        if (ts) {
+          if (setFieldValue(o.doc, o.model, ts.id, 0, String(args.timestep))) changed.push(`Timestep ${args.timestep}`)
+        } else {
+          this.labelFields(createObject(o.doc, schema.resolve('Timestep') ?? 'Timestep', [String(args.timestep)]))
+          changed.push(`Timestep ${args.timestep} (added)`)
+        }
+      }
+      if (rp) {
+        const type = schema.get('RunPeriod')!
+        const at = (key: string): number => type.f.indexOf(key)
+        const dates: Array<[string, number]> = [
+          ['begin_month', rp.beginMonth],
+          ['begin_day_of_month', rp.beginDay],
+          ['end_month', rp.endMonth],
+          ['end_day_of_month', rp.endDay],
+        ]
+        if (period) {
+          for (const [key, v] of dates) setFieldValue(o.doc, o.model, period.id, at(key), String(v))
+        } else {
+          const values: string[] = [rp.name ?? 'Run Period 1']
+          for (const [key, v] of dates) {
+            while (values.length <= at(key)) values.push('')
+            values[at(key)] = String(v)
+          }
+          this.labelFields(createObject(o.doc, 'RunPeriod', values))
+        }
+        changed.push(`RunPeriod ${rp.beginMonth}/${rp.beginDay}–${rp.endMonth}/${rp.endDay}${period ? '' : ' (added)'}`)
+      }
+      if (control) {
+        for (const w of controlWrites) {
+          if (setFieldValue(o.doc, o.model, control.id, w.index, w.value)) changed.push(`SimulationControl ${this.fieldLabel(control, w.index)} ${w.value}`)
+        }
+      }
+    })
+    this.rebuild()
+    return { changed }
+  }
+
+  /**
+   * People, lights, equipment, infiltration and ventilation: what each object sets, and the
+   * per-floor-area equivalent where the target's floor area is known.
+   */
+  inspectLoads(zone?: string): { loads: LoadEntry[]; zoneFloorAreas: Record<string, number> } {
+    const o = this.need()
+    const schema = this.needSchema()
+    const areas = new Map(this.listZones().map((z) => [z.name.toLowerCase(), z.floorArea]))
+    const zoneLists = new Map<string, string[]>()
+    for (const id of o.doc.byClass.get('zonelist') ?? []) {
+      const zl = o.doc.objects.get(id)!
+      zoneLists.set(zl.fields[0]?.value.trim().toLowerCase() ?? '', zl.fields.slice(1).map((f) => f.value.trim().toLowerCase()))
+    }
+    const zonesOf = (target: string): string[] => {
+      const t = target.trim().toLowerCase()
+      return zoneLists.get(t) ?? (areas.has(t) ? [t] : [])
+    }
+    const wanted = zone?.trim().toLowerCase()
+    const loads: LoadEntry[] = []
+    for (const [cls, methods] of Object.entries(LOAD_CLASSES)) {
+      const type = schema.get(cls)
+      if (!type) continue
+      const m = type.f.findIndex((k) => k.endsWith('calculation_method'))
+      const targetIndex = type.f.findIndex((k) => k.startsWith('zone_or_zonelist'))
+      for (const id of o.doc.byClass.get(cls.toLowerCase()) ?? []) {
+        const obj = o.doc.objects.get(id)!
+        const target = obj.fields[targetIndex]?.value.trim() ?? ''
+        const zones = zonesOf(target)
+        if (wanted !== undefined && target.toLowerCase() !== wanted && !zones.includes(wanted)) continue
+        const method = (obj.fields[m]?.value.trim() || String(type.p[type.f[m]!]?.d ?? '')).toLowerCase()
+        const offset = methods[method]
+        const valueIndex = offset === undefined ? -1 : m + offset
+        const raw = valueIndex >= 0 ? (obj.fields[valueIndex]?.value.trim() ?? '') : ''
+        const value = raw === '' ? '' : Number.isFinite(Number(raw)) ? Number(raw) : raw
+        const def = valueIndex >= 0 ? type.p[type.f[valueIndex]!] : undefined
+        const units = def?.u ?? (method === 'people' ? 'people' : '')
+        const entry: LoadEntry = {
+          class: cls,
+          name: obj.fields[0]?.value ?? '',
+          target,
+          schedule: obj.fields[m - 1]?.value ?? '',
+          method: obj.fields[m]?.value.trim() || String(type.p[type.f[m]!]?.d ?? ''),
+          value,
+          units,
+        }
+        // Each zone of a list gets the full value, so its density is the zone's own.
+        const area = zones.length === 1 ? areas.get(zones[0]!) : undefined
+        if (typeof value === 'number') {
+          if (PER_AREA.has(method)) entry.perFloorArea = { value, units }
+          else if (method === 'area/person' && value > 0) entry.perFloorArea = { value: round(1 / value, 4), units: 'person/m2' }
+          else if (ABSOLUTE.has(method) && area) entry.perFloorArea = { value: round(value / area, 4), units: `${units}/m2` }
+        }
+        loads.push(entry)
+      }
+    }
+    return { loads, zoneFloorAreas: Object.fromEntries(this.listZones().map((z) => [z.name, z.floorArea])) }
+  }
+
+  /**
+   * Multiply the value each load object actually uses — whichever field its calculation method
+   * reads — by `factor`, as one undo step. Area per person is divided, so the load still scales
+   * by `factor`. Autosized and blank values are left alone.
+   */
+  scaleLoads(args: { className: string; factor: number; zone?: string | undefined; names?: string[] | undefined }): {
+    changed: string[]
+    skipped: string[]
+  } {
+    const o = this.need()
+    const schema = this.needSchema()
+    if (!(args.factor > 0) || !Number.isFinite(args.factor)) throw new SessionError('The factor must be a positive number.')
+    const cls = Object.keys(LOAD_CLASSES).find((c) => c.toLowerCase() === args.className.trim().toLowerCase())
+    if (!cls) throw new SessionError(`scale_loads works on ${Object.keys(LOAD_CLASSES).join(', ')}.`)
+    const type = schema.get(cls)!
+    const m = type.f.findIndex((k) => k.endsWith('calculation_method'))
+    const names = args.names?.map((n) => n.trim().toLowerCase())
+    const entries = this.inspectLoads(args.zone).loads.filter(
+      (l) => l.class === cls && (!names || names.includes(l.name.trim().toLowerCase())),
+    )
+    if (entries.length === 0) throw new SessionError(`No ${cls} objects${args.zone ? ` for '${args.zone}'` : ''}${names ? ' with those names' : ''}.`)
+    const changed: string[] = []
+    const skipped: string[] = []
+    o.history.transact(`Scale ${cls}`, () => {
+      for (const e of entries) {
+        const obj = this.objectNamed(e.name, cls)
+        const method = e.method.toLowerCase()
+        const offset = LOAD_CLASSES[cls]![method]
+        if (typeof e.value !== 'number' || offset === undefined) {
+          skipped.push(`${e.name}: ${e.value === '' ? 'no value' : e.value}`)
+          continue
+        }
+        const next = method === 'area/person' ? e.value / args.factor : e.value * args.factor
+        const text = String(Number(next.toPrecision(6)))
+        setFieldValue(o.doc, o.model, obj.id, m + offset, text)
+        changed.push(`${cls} '${e.name}': ${this.fieldLabel(obj, m + offset)} ${e.value} → ${text}`)
+      }
+    })
+    this.rebuild()
+    return { changed, skipped }
+  }
+
+  /** Request output variables and meters, skipping those already requested at that frequency. */
+  addOutputs(args: { variables?: Array<{ name: string; key?: string | undefined }> | undefined; meters?: string[] | undefined; frequency: string }): {
+    added: string[]
+    alreadyRequested: string[]
+  } {
+    const o = this.need()
+    const schema = this.needSchema()
+    const varType = schema.get('Output:Variable')!
+    const freqDef = varType.p.reporting_frequency
+    const problem = valueProblem(freqDef, args.frequency)
+    if (problem) throw new SessionError(`Reporting frequency ${problem}.`)
+    const frequency = String(freqDef?.e?.find((c) => String(c).toLowerCase() === args.frequency.trim().toLowerCase()) ?? args.frequency)
+    const existing = (cls: string): string[][] =>
+      (o.doc.byClass.get(cls) ?? []).map((id) => o.doc.objects.get(id)!.fields.map((f) => f.value.trim().toLowerCase()))
+    const vars = existing('output:variable')
+    const meters = existing('output:meter')
+    const added: string[] = []
+    const already: string[] = []
+    o.history.transact('Add outputs', () => {
+      for (const v of args.variables ?? []) {
+        const key = v.key?.trim() || '*'
+        const label = `${v.name} (${key}, ${frequency})`
+        const same = vars.some((f) => f[1] === v.name.trim().toLowerCase() && (f[0] === key.toLowerCase() || f[0] === '*') && (f[2] || 'hourly') === frequency.toLowerCase())
+        if (same) {
+          already.push(label)
+          continue
+        }
+        this.labelFields(createObject(o.doc, 'Output:Variable', [key, v.name.trim(), frequency]))
+        vars.push([key.toLowerCase(), v.name.trim().toLowerCase(), frequency.toLowerCase()])
+        added.push(`Output:Variable ${label}`)
+      }
+      for (const name of args.meters ?? []) {
+        const label = `${name} (${frequency})`
+        if (meters.some((f) => f[0] === name.trim().toLowerCase() && (f[1] || 'hourly') === frequency.toLowerCase())) {
+          already.push(label)
+          continue
+        }
+        this.labelFields(createObject(o.doc, 'Output:Meter', [name.trim(), frequency]))
+        meters.push([name.trim().toLowerCase(), frequency.toLowerCase()])
+        added.push(`Output:Meter ${label}`)
+      }
+    })
+    this.rebuild()
+    return { added, alreadyRequested: already }
+  }
+
+  /**
+   * Replace the design days with ones from a weather station's DDY file, and set Site:Location
+   * from it, as one undo step. By default the annual 99.6% heating and 0.4% cooling (dry bulb)
+   * conditions; `designDays` picks others by part of their name.
+   */
+  applyDesignConditions(
+    ddy: string,
+    opts: { designDays?: string[] | undefined; location?: boolean | undefined } = {},
+  ): { removed: string[]; added: string[]; location: string | null } {
+    const o = this.need()
+    const source = parseIdf(ddy)
+    const ofClass = (cls: string): IdfObject[] => (source.byClass.get(cls) ?? []).map((id) => source.objects.get(id)!)
+    const days = ofClass('sizingperiod:designday')
+    const patterns = opts.designDays?.length ? opts.designDays.map((p) => p.trim().toLowerCase()) : ['ann htg 99.6% condns db', 'ann clg .4% condns db=>mwb']
+    const picked = patterns.map((p) => {
+      const hit = days.find((d) => (d.fields[0]?.value ?? '').toLowerCase().includes(p))
+      if (!hit) throw new SessionError(`The DDY has no design day matching '${p}'. It has: ${days.map((d) => d.fields[0]?.value).join('; ')}.`)
+      return hit
+    })
+    const loc = opts.location === false ? undefined : ofClass('site:location')[0]
+    const existing = (o.doc.byClass.get('sizingperiod:designday') ?? []).slice()
+    const removed = existing.map((id) => o.doc.objects.get(id)!.fields[0]?.value ?? '')
+    const added: string[] = []
+    let location: string | null = null
+    o.history.transact('Design conditions', () => {
+      removeObjects(o.doc, existing)
+      for (const d of picked) {
+        this.labelFields(createObject(o.doc, 'SizingPeriod:DesignDay', d.fields.map((f) => f.value)))
+        added.push(d.fields[0]?.value ?? '')
+      }
+      if (loc) {
+        const values = loc.fields.map((f) => f.value)
+        const siteId = o.doc.byClass.get('site:location')?.[0]
+        if (siteId) values.forEach((v, i) => setFieldValue(o.doc, o.model, siteId, i, v))
+        else this.labelFields(createObject(o.doc, 'Site:Location', values))
+        location = `${values[0]} (${values[1]}, ${values[2]}; UTC${Number(values[3]) >= 0 ? '+' : ''}${values[3]}; ${values[4]} m)`
+      }
+    })
+    this.rebuild()
+    return { removed, added, location }
   }
 
   /** Rename an object and every field that refers to it by name. */
@@ -735,6 +1063,30 @@ export class ModelSession {
     const full = type ? slotIndex(type, field) : undefined
     if (full !== undefined) return full
     throw new SessionError(`${obj.className} has no field '${field}'${type ? '; see describe_class' : ''}.`)
+  }
+
+  /** Resolve and check field writes; refuse all of them if any is wrong. */
+  private planWrites(obj: IdfObject, fields: Record<string, FieldInput>): Array<{ index: number; value: string }> {
+    const writes = Object.entries(fields).map(([field, value]) => {
+      const index = this.fieldIndexOf(obj, /^\d+$/.test(field) ? Number(field) : field)
+      if (index === 0 && this.isNamed(obj)) throw new SessionError('Use rename_object to change a name, so references follow it.')
+      return { index, value: String(value), problem: this.valueProblemAt(obj, index, value) }
+    })
+    const problems = writes.filter((w) => w.problem).map((w) => `${this.fieldLabel(obj, w.index)} ${w.problem}`)
+    if (problems.length) throw new SessionError(`Nothing changed: ${problems.join('; ')}.`)
+    return writes
+  }
+
+  /** Every non-blank field by epJSON name (IDD name where the schema has none). */
+  private fieldsByKey(obj: IdfObject): Record<string, string> {
+    const type = this.typeOf(obj)
+    const out: Record<string, string> = {}
+    obj.fields.forEach((f, i) => {
+      if (f.value.trim() === '') return
+      const slot = type ? slotAt(type, i) : undefined
+      out[slot ? (slot.group ? `${slot.key}_${slot.group}` : slot.key) : this.fieldLabel(obj, i)] = f.value.trim()
+    })
+    return out
   }
 
   private valueProblemAt(obj: IdfObject, i: number, value: FieldInput): string | undefined {

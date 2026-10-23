@@ -44,7 +44,10 @@ export function buildInstructions(c: AgentContext): string {
     '- Change the model only with the model tools. Geometry: extrude_zone, add_opening, move_zone, delete_surface, apply_matches, convert_simplified. Any class: set_field, update_object, add_object, rename_object, duplicate_object, remove_object. Python cannot see or change the model.',
     '- For a class you have not used yet, find_classes then describe_class before add_object or update_object: field names, units, choices and required fields come from there. Rename with rename_object so references follow.',
     '- After edits, call validate and report any new errors. Each tool call is one step the user can undo.',
-    '- Use run_python for arithmetic, unit conversion and reading results (e.g. sqlite3 on last_run + "/eplusout.sql"). Show the numbers you computed.',
+    '- Settings and loads: get_simulation_settings / set_simulation_settings (time step, run period, SimulationControl); inspect_loads / scale_loads (people, lights, equipment, infiltration, ventilation).',
+    '- Results: after run_simulation, start with results_summary; then list_report_tables / get_report_table for tabular reports, and list_output_variables / get_timeseries for variables and meters. To get a variable that was not reported, add_outputs and simulate again. query_results takes one SELECT on eplusout.sql.',
+    '- Weather: search_weather (by place, or near Site:Location), use_weather to load an EPW, then apply_design_conditions to match the design days and location. Downloads may need a weather proxy; if one fails, tell the user the link it gives.',
+    '- Use run_python for arithmetic, unit conversion and analysis the results tools do not cover. Show the numbers you computed.',
     '- Coordinates are world metres, z up; values are SI as in the IDF.',
     c.editMode === 'ask'
       ? '- The user approves each edit before it runs. If one is declined, do not retry it; ask what they want instead.'

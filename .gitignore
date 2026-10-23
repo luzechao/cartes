@@ -15,8 +15,9 @@ src/parser/idd-table.generated.ts
 # Simulation engine + Pyodide runtime, copied from node_modules by `predev`/`prebuild` (sim-engine-wasm-assets).
 public/sim-engine/
 
-# EnergyPlus schema bundle, copied from @idfkit/schemas by `predev`/`prebuild` (scripts/copy-schemas.mjs).
+# Schema bundle and weather-station index, copied from @idfkit by `predev`/`prebuild` (scripts/copy-data.mjs).
 public/schemas/
+public/weather/
 .scratch/
 
 # Raw EnergyPlus IDD files and example corpus — large, fetched not committed.

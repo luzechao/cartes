@@ -44,6 +44,7 @@ describe('MCP server', () => {
     expect(tools.map((t) => t.name).sort()).toEqual(
       [
         'add_object',
+        'add_outputs',
         'add_opening',
         'apply_matches',
         'convert_simplified',
@@ -53,7 +54,9 @@ describe('MCP server', () => {
         'duplicate_object',
         'extrude_zone',
         'find_classes',
+        'get_simulation_settings',
         'inspect',
+        'inspect_loads',
         'list_objects',
         'list_surfaces',
         'list_zones',
@@ -65,6 +68,8 @@ describe('MCP server', () => {
         'remove_object',
         'rename_object',
         'save_idf',
+        'scale_loads',
+        'set_simulation_settings',
         'set_field',
         'summary',
         'undo',

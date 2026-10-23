@@ -71,6 +71,10 @@ import { usePython } from './usePython.js'
 import { AgentPanel } from './AgentPanel.js'
 import { useAgent, type AgentBridge } from './useAgent.js'
 import { sharedSimulationClient } from '../simulate/index.js'
+import { withResultOutputs } from '../results/index.js'
+import { queryOverPython } from '../results/python.js'
+import { designDayNames, downloadWeather, type StationSummary } from '../weather/index.js'
+import { WeatherDialog } from './WeatherDialog.js'
 import { SimulatePanel } from './SimulatePanel.js'
 import { useSimulation } from './useSimulation.js'
 import { EXAMPLES, fetchExample, type Example } from './examples.js'
@@ -210,6 +214,23 @@ export function App(): React.JSX.Element {
   // Refreshed every render below, so the agent's tools always reach the current document.
   const agentBridge = useRef<AgentBridge>(null!)
   const agent = useAgent(agentBridge)
+  const [showWeather, setShowWeather] = useState(false)
+  const [weatherProxy, setWeatherProxy] = useState(() => {
+    try {
+      return globalThis.localStorage?.getItem('cartes.weather.proxy') ?? ''
+    } catch {
+      return ''
+    }
+  })
+  useEffect(() => {
+    try {
+      globalThis.localStorage?.setItem('cartes.weather.proxy', weatherProxy)
+    } catch {
+      // Not persisted; the setting still holds for this visit.
+    }
+  }, [weatherProxy])
+  // The DDY of the weather last found, for the agent to take design days from.
+  const designConditionsRef = useRef<string | undefined>(undefined)
 
   // Pointer and keyboard handlers outlive a render; they read the current state through these.
   const loadedRef = useRef<LoadedFile | undefined>(undefined)
@@ -1091,6 +1112,24 @@ export function App(): React.JSX.Element {
     if (id) selectObject(id)
   }
 
+  const loadStation = async (station: StationSummary | string): Promise<{ station: StationSummary; designDays: string[] }> => {
+    const w = await downloadWeather(typeof station === 'string' ? station : station.id, weatherProxy)
+    simulation.setEpw(w.epw)
+    designConditionsRef.current = w.ddy ?? undefined
+    setNotice(`Weather: ${w.station.name} (${w.epw.name}).`)
+    return { station: w.station, designDays: designDayNames(w.ddy ?? '') }
+  }
+
+  const siteLocation = useMemo(() => {
+    const id = loaded?.doc.byClass.get('site:location')?.[0]
+    const f = id ? loaded?.doc.objects.get(id)?.fields : undefined
+    const latitude = Number(f?.[1]?.value)
+    const longitude = Number(f?.[2]?.value)
+    return f && f[1]?.value.trim() && f[2]?.value.trim() && Number.isFinite(latitude) && Number.isFinite(longitude)
+      ? { name: f[0]?.value ?? '', latitude, longitude }
+      : undefined
+  }, [loaded])
+
   agentBridge.current = {
     document: () => {
       const current = loadedRef.current
@@ -1132,7 +1171,8 @@ export function App(): React.JSX.Element {
       const current = loadedRef.current
       if (!current) return { error: 'No model is open.' }
       if (simulation.running) return { error: 'A simulation is already running; wait for it to finish.' }
-      const attempt = await simulation.run(emitIdf(current.doc), current.name, getDirtyObjects(current.doc).length > 0)
+      const { idf, added } = withResultOutputs(emitIdf(current.doc))
+      const attempt = await simulation.run(idf, current.name, getDirtyObjects(current.doc).length > 0)
       if (!attempt.result) return { error: attempt.error }
       const r = attempt.result
       return {
@@ -1147,9 +1187,17 @@ export function App(): React.JSX.Element {
           .slice(0, 20)
           .map((m) => ({ severity: m.severity, message: m.message, details: m.details.slice(0, 6) })),
         outputs: Object.keys(r.outputs).sort(),
-        note: 'The output files are in the directory `last_run`; read them with run_python.',
+        ...(added.length ? { outputsAddedForThisRun: added } : {}),
+        note: 'Read results with results_summary, get_report_table and get_timeseries; the files are in `last_run` for run_python.',
       }
     },
+    queryResults: (sql, params) => queryOverPython((code) => agentBridge.current.runPython(code), sql, params),
+    outputText: (name) => {
+      const bytes = simulation.result?.outputs[name]
+      return bytes ? new TextDecoder().decode(bytes) : undefined
+    },
+    useWeather: (id) => loadStation(id),
+    lastDesignConditions: () => designConditionsRef.current,
   }
 
   const filteredIssues = (validation?.issues ?? []).filter((issue) => {
@@ -1300,6 +1348,7 @@ export function App(): React.JSX.Element {
         edited={dirtyObjects.length > 0}
         onRun={runSimulation}
         consoleVisible={showRightPanel && rightTab === 'simulate'}
+        onFindWeather={() => setShowWeather(true)}
         onToggleConsole={() => toggleRightTab('simulate')}
         pythonVisible={showRightPanel && rightTab === 'python'}
         onTogglePython={() => toggleRightTab('python')}
@@ -1543,6 +1592,18 @@ export function App(): React.JSX.Element {
       </div>
 
       {dialog}
+
+      {showWeather && (
+        <WeatherDialog
+          site={siteLocation}
+          proxy={weatherProxy}
+          onProxyChange={setWeatherProxy}
+          onUse={async (station) => {
+            await loadStation(station)
+          }}
+          onClose={() => setShowWeather(false)}
+        />
+      )}
 
       {/* Live Diff / Raw IDF Modal */}
       {loaded && showDiff && (

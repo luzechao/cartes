@@ -31,6 +31,14 @@ function fakeApp(opts: { editMode?: 'ask' | 'auto'; approve?: boolean } = {}) {
     },
     runPython: async (code) => ({ ok: true, value: `ran ${code.length} chars`, stdout: '', stderr: '' }),
     runSimulation: async () => ({ exitCode: 0 }),
+    queryResults: async () => {
+      throw new Error('no results')
+    },
+    outputText: () => undefined,
+    useWeather: async () => {
+      throw new Error('no weather')
+    },
+    lastDesignConditions: () => undefined,
   }
   return { open, host, approvals }
 }

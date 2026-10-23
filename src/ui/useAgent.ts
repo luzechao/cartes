@@ -91,6 +91,10 @@ export function useAgent(bridge: React.RefObject<AgentBridge>): Agent {
       afterEdit: () => bridge.current.afterEdit(),
       runPython: (code) => bridge.current.runPython(code),
       runSimulation: () => bridge.current.runSimulation(),
+      queryResults: (sql, params) => bridge.current.queryResults(sql, params),
+      outputText: (name) => bridge.current.outputText(name),
+      useWeather: (id) => bridge.current.useWeather(id),
+      lastDesignConditions: () => bridge.current.lastDesignConditions(),
       editMode: () => settingsRef.current.editMode,
       approve: (request, signal) =>
         new Promise<boolean>((resolve) => {

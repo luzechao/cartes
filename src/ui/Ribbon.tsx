@@ -25,6 +25,7 @@ import {
   DrawZoneIcon,
   ExamplesIcon,
   FitIcon,
+  GlobeSearchIcon,
   ImageIcon,
   InspectorIcon,
   KeyIcon,
@@ -123,6 +124,7 @@ interface RibbonProps {
   /** Whether the model has unsaved edits (the run includes them). */
   edited: boolean
   onRun: () => void
+  onFindWeather: () => void
   consoleVisible: boolean
   onToggleConsole: () => void
   pythonVisible: boolean
@@ -505,6 +507,12 @@ function SimulateTab(props: RibbonProps): React.JSX.Element {
             onClear={simulation.epw ? () => simulation.setEpw(undefined) : undefined}
           />
         </div>
+        <RibbonButton
+          icon={<GlobeSearchIcon />}
+          label="Find weather"
+          onClick={props.onFindWeather}
+          title="Search about 69,000 TMYx weather stations by place, or near the model's location, and use one"
+        />
         <div className="ribbon__input">
           <FileButton
             icon={<PluginIcon />}

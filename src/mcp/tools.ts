@@ -263,6 +263,78 @@ export const sessionTools: SessionTool[] = [
       'computed as EnergyPlus computes them. Returns any behaviour that will change.',
     run: (s) => s.convertSimplified(),
   }),
+  define({
+    name: 'get_simulation_settings',
+    kind: 'read',
+    description: 'Time step, run periods, SimulationControl flags, Site:Location and design-day names.',
+    run: (s) => s.simulationSettings(),
+  }),
+  define({
+    name: 'set_simulation_settings',
+    kind: 'edit',
+    description:
+      'Change the time step (steps per hour, a divisor of 60), a run period’s dates, and SimulationControl flags ' +
+      '(e.g. {"run_simulation_for_sizing_periods": "No"}), as one undo step. A missing Timestep or RunPeriod is added.',
+    input: {
+      timestep: z.number().int().optional(),
+      run_period: z
+        .object({
+          name: z.string().optional().describe('Which run period, when the file has several.'),
+          begin_month: z.number().int(),
+          begin_day: z.number().int(),
+          end_month: z.number().int(),
+          end_day: z.number().int(),
+        })
+        .optional(),
+      simulation_control: z.record(z.string(), value).optional(),
+    },
+    run: (s, a) =>
+      s.setSimulationSettings({
+        timestep: a.timestep,
+        runPeriod: a.run_period && {
+          name: a.run_period.name,
+          beginMonth: a.run_period.begin_month,
+          beginDay: a.run_period.begin_day,
+          endMonth: a.run_period.end_month,
+          endDay: a.run_period.end_day,
+        },
+        simulationControl: a.simulation_control,
+      }),
+  }),
+  define({
+    name: 'inspect_loads',
+    kind: 'read',
+    description:
+      'People, lights, electric/gas/hot-water/steam/other equipment, infiltration and ventilation objects: target ' +
+      'zone or list, schedule, calculation method, the value that method uses, and its per-floor-area equivalent. ' +
+      'Also every zone’s floor area.',
+    input: { zone: z.string().optional() },
+    run: (s, a) => s.inspectLoads(a.zone),
+  }),
+  define({
+    name: 'scale_loads',
+    kind: 'edit',
+    description:
+      'Multiply the loads of one class (People, Lights, ElectricEquipment, GasEquipment, HotWaterEquipment, ' +
+      'SteamEquipment, OtherEquipment, ZoneInfiltration:DesignFlowRate, ZoneVentilation:DesignFlowRate) by a factor — ' +
+      'whichever field each object’s calculation method uses — optionally for one zone or named objects. One undo step.',
+    input: { class: z.string(), factor: z.number().positive(), zone: z.string().optional(), names: z.array(z.string()).optional() },
+    run: (s, a) => s.scaleLoads({ className: a.class, factor: a.factor, zone: a.zone, names: a.names }),
+  }),
+  define({
+    name: 'add_outputs',
+    kind: 'edit',
+    description:
+      'Request output variables (Output:Variable, key "*" for all) and meters (Output:Meter) at a reporting ' +
+      'frequency (Timestep, Hourly, Daily, Monthly, RunPeriod…). Already-requested ones are skipped. Names come ' +
+      'from list_output_variables.',
+    input: {
+      variables: z.array(z.object({ name: z.string(), key: z.string().optional() })).optional(),
+      meters: z.array(z.string()).optional(),
+      frequency: z.string(),
+    },
+    run: (s, a) => s.addOutputs({ variables: a.variables, meters: a.meters, frequency: a.frequency }),
+  }),
   define({ name: 'undo', kind: 'edit', description: 'Undo the last edit.', run: (s) => s.undo() }),
   define({ name: 'redo', kind: 'edit', description: 'Redo the last undone edit.', run: (s) => s.redo() }),
   define({

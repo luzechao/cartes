@@ -419,3 +419,14 @@ export function BoltIcon(props: IconProps): React.JSX.Element {
     </Svg>
   )
 }
+
+/** Globe with a magnifier: find a weather station. */
+export function GlobeSearchIcon(props: IconProps): React.JSX.Element {
+  return (
+    <Svg {...props}>
+      <circle cx="10" cy="10" r="6.5" />
+      <path d="M3.5 10h13M10 3.5c-2 2-2.8 4.2-2.8 6.5s.8 4.5 2.8 6.5M10 3.5c2 2 2.8 4.2 2.8 6.5" />
+      <path d="m15.2 15.2 5.3 5.3" strokeWidth={2} />
+    </Svg>
+  )
+}

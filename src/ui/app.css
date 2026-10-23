@@ -2260,3 +2260,95 @@ button:disabled {
   padding-top: 0;
   border-top: none;
 }
+
+/* Find weather dialog */
+.weather-dialog {
+  width: min(640px, 92vw);
+}
+
+.weather-dialog__search {
+  display: flex;
+  gap: 6px;
+  margin: 8px 0;
+}
+
+.weather-dialog__search input {
+  flex: 1;
+  padding: 5px 8px;
+  border: 1px solid #4a4d55;
+  border-radius: 4px;
+  background: #1c1d22;
+  color: inherit;
+  font: inherit;
+}
+
+.weather-dialog__results {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  height: 260px;
+  overflow-y: auto;
+  margin-bottom: 10px;
+  padding: 4px;
+  border: 1px solid #31343c;
+  border-radius: 6px;
+  background: #16171b;
+}
+
+.weather-dialog__empty {
+  padding: 20px;
+  text-align: center;
+  color: #8b8e97;
+}
+
+.weather-dialog__station {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 6px 8px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: #d6d8de;
+  text-align: left;
+  cursor: pointer;
+}
+
+.weather-dialog__station:hover {
+  background: #24262c;
+}
+
+.weather-dialog__station--chosen {
+  border-color: rgba(74, 144, 217, 0.6);
+  background: rgba(74, 144, 217, 0.15);
+}
+
+.weather-dialog__name {
+  font-weight: 600;
+}
+
+.weather-dialog__distance,
+.weather-dialog__meta,
+.weather-dialog__file {
+  font-size: 11px;
+  color: #9da0a8;
+  font-weight: normal;
+}
+
+.weather-dialog__file {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #7b7f88;
+}
+
+.weather-dialog__error {
+  margin-bottom: 10px;
+  padding: 6px 10px;
+  border-left: 3px solid #e05d5d;
+  background: rgba(224, 93, 93, 0.1);
+  color: #ffb3b3;
+  font-size: 12px;
+}
+
+.weather-dialog__error a {
+  color: #9cc6f0;
+}

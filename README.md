@@ -79,8 +79,9 @@ EnergyPlus compiled to WebAssembly and loaded into Pyodide 314. The sidebar foll
 Geometry shows Inspector, Validation and Matching; Simulate shows Simulate and Python; Agent shows
 Chat.
 
-- **Inputs.** Load an EPW weather file. Without one, only the model's design days run
-  (`energyplus -D`). Load the `.py` modules named by `PythonPlugin:Instance` objects, and list any
+- **Inputs.** Load an EPW weather file, or **Find weather**: search about 69,000 TMYx stations
+  from climate.onebuilding.org by place or near the model's Site:Location, and use one. Without
+  weather, only the model's design days run (`energyplus -D`). Load the `.py` modules named by `PythonPlugin:Instance` objects, and list any
   Pyodide packages they import, such as `numpy`.
 - **Results.** The sidebar's Simulate tab shows the run status, the live EnergyPlus console, the
   warning, severe and fatal messages, and every output file to download. **Report** opens
@@ -130,11 +131,34 @@ field-level writes, twins kept in step, proposals before matching.
   the chat. A rejected edit is reported back to the agent, which is told not to retry it.
   **Apply automatically** skips the question. Either way, each tool call is one undo step, labelled
   "Agent: …", in the app's own history.
+- **Settings, loads, outputs.** `get_simulation_settings` and `set_simulation_settings` (time
+  step, run period, SimulationControl); `inspect_loads` (people, lights, equipment, infiltration
+  and ventilation, with per-floor-area values) and `scale_loads`, which multiplies whichever field
+  each object's calculation method reads; `add_outputs` for variables and meters.
+- **Results.** `results_summary` (site and source energy, EUI, end uses by fuel, unmet hours),
+  `list_report_tables` and `get_report_table` for the tabular reports, `list_output_variables`
+  (reported, and requestable from the `.rdd`/`.mdd`), `get_timeseries` (statistics and monthly
+  values, aggregated in SQL) and `query_results` (one read-only SELECT). They read the last run's
+  `eplusout.sql` with Python's `sqlite3` in the Pyodide interpreter. `run_simulation` adds
+  `Output:SQLite`, `Output:VariableDictionary` and `Output:Table:SummaryReports` to the text it
+  simulates when the model lacks them; the model itself is not changed.
+- **Weather.** `search_weather`, `use_weather`, and `apply_design_conditions`, which replaces the
+  design days with the station's DDY (annual 99.6% heating and 0.4% cooling by default) and sets
+  Site:Location.
 - **Context.** Each turn tells the agent the file, its counts and validation state, the selected
   object, the weather file and the last run.
 
 The AI SDK loads only when the first message is sent, so it adds nothing to the app's initial
 download.
+
+## Weather downloads
+
+The station index is served with the app, so searching works offline. Downloading does not:
+climate.onebuilding.org sends no CORS header, so a web page cannot fetch its files. Set a weather
+proxy in **Simulate → Find weather**: `{url}` in it is replaced by the file's address, or the
+address is appended. [`proxy/weather-proxy.js`](proxy/weather-proxy.js) is a Cloudflare Worker
+that forwards climate.onebuilding.org files only. Without a proxy, the dialog gives the
+download link, and the EPW inside can be loaded with **Weather**.
 
 ## Full schema
 
@@ -142,7 +166,7 @@ The model layer's own IDD table covers the geometry classes across 27 releases. 
 comes from [`@idfkit/schemas`](https://github.com/idfkit/idfkit-js) (every class, 8.9 to 26.2,
 ~1 MB gzipped) with validation and descriptions from `@idfkit/core`. cartes still owns the
 document and every write; idfkit only reads. The bundle is copied to `public/schemas/` by
-`predev`/`prebuild` and fetched when a file is opened.
+`predev`/`prebuild` (`scripts/copy-data.mjs`) and fetched when a file is opened.
 
 Field checks follow idfkit's codes (E002–E010) with one exception: `Autosize` and `Autocalculate`
 are accepted for each other. EnergyPlus does the same, and 836 such values occur in 164 of its own
@@ -184,9 +208,10 @@ export NODE_EXTRA_CA_CERTS=/etc/ssl/cert.pem
 **Deployment.** `.github/workflows/pages.yml` typechecks, tests, builds and deploys to GitHub Pages
 on every push to `main`.
 
-**MCP.** `npm run mcp` serves 27 tools, including `open_idf`, `new_model`, `find_classes`,
-`describe_class`, `add_object`, `rename_object`, `extrude_zone`, `add_opening`, `apply_matches`,
-`validate`, `save_idf` and `undo`. Register it in an MCP client with the command `npx tsx scripts/mcp-server.ts`,
+**MCP.** `npm run mcp` serves 32 tools, including `open_idf`, `new_model`, `find_classes`,
+`describe_class`, `add_object`, `rename_object`, `set_simulation_settings`, `inspect_loads`,
+`scale_loads`, `add_outputs`, `extrude_zone`, `apply_matches`, `validate`, `save_idf` and `undo`.
+Simulation, results and weather are the in-app agent's only. Register it in an MCP client with the command `npx tsx scripts/mcp-server.ts`,
 run from the repository root. The tools address objects by name (unnamed singletons such as
 `Timestep` by class), return JSON, and share the UI's code and undo history. They are defined once
 in `src/mcp/tools.ts` and also serve the in-app agent. Nothing is written to disk until `save_idf`
@@ -204,6 +229,8 @@ is called.
 | `src/ui/` | React shell: ribbon (`Ribbon.tsx`, `icons.tsx`), panels including the Python REPL and agent chat, dialogs, examples |
 | `src/mcp/` | Tool registry shared with the agent (`tools.ts`), browser-safe session, stdio MCP server |
 | `src/schema/` | Full EnergyPlus schema (idfkit): loading, field layout, value checks, validation, class descriptions |
+| `src/results/` | Reading `eplusout.sql` (summary, tabular reports, time series, SQL) and the `.rdd`/`.mdd` |
+| `src/weather/` | TMYx station search and EPW/DDY download (idfkit) |
 | `src/agent/` | In-app agent: providers and settings, tools with approval, system prompt, turn loop |
 | `test/` | Unit tests, corpus and round-trip gates, EnergyPlus gates, simulation tests |
 
