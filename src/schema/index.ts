@@ -181,7 +181,7 @@ export interface SchemaIssue {
  * fields, references and singletons — as idfkit (and idfkit-mcp) run them.
  *
  * One difference, measured: idfkit reports `AUTOCALCULATE` in a field whose schema lists only
- * `Autosize` (and the reverse). EnergyPlus accepts either — 836 such values in 164 of its own
+ * `Autosize` (and the reverse). EnergyPlus accepts either — 836 such values across 164 of its own
  * example files, which run, `5ZoneAirCooled` among them in this app's engine — so those are not
  * reported.
  */

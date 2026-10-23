@@ -1,7 +1,12 @@
 # 02 — Prior Art: What to Take, What to Avoid
 
-Source-level study of the three reference projects. Everything below was read from the actual
+Source-level study of the reference projects. Everything below was read from the actual
 repositories, not recalled.
+
+The first three — EPShape, VI-Suite, Pascal Editor — shaped the editor. The rest were studied
+later, for running EnergyPlus in the browser, the full schema, and the agent and MCP tools:
+idfkit (`idfkit-js`, `idfkit-mcp`, `idfkit-shoebox`), LBNL's EnergyPlus-MCP, and the
+`browser-energy-simulation` build recipe.
 
 ---
 
@@ -284,7 +289,140 @@ Taken from their own reference plugin's README:
 
 ---
 
-## Summary: the three lessons that matter most
+## idfkit — `idfkit/idfkit`, `idfkit/idfkit-js`
+
+An EnergyPlus model library for Python (`idfkit`) and its JavaScript counterpart (`idfkit-js`,
+published as `@idfkit/*` on npm). MIT. The two share schemas, validation codes and wire formats on
+purpose: the JS port says where it cannot match Python, check by check.
+
+### ★ What we use
+
+- **`@idfkit/schemas`** — the epJSON schema for every release from 8.9 to 26.2 in about 1 MB
+  gzipped. Each distinct class definition is stored once, keyed by a content hash, and each release
+  is a small manifest of class name → hash: 14,092 definitions across 17 manifests, 2,568 distinct.
+  Documentation prose (field notes, class memos) is a separate pool loaded on demand. This is
+  EPShape's "preprocess the IDD" idea taken to every class and every release, and it is why the
+  Inspector, validation and the agent cover all ~850 classes. Our own field table still covers the
+  geometry classes back to 27 releases, synchronously.
+- **`@idfkit/core`** — `validateDocument` (codes E001–E010, W002–W003), `describeObjectType` and
+  `docsUrlForObject`. We parse our emitted text into an idfkit document only to validate it.
+- **`@idfkit/weather`** — the climate.onebuilding.org TMYx station index (~69,000 entries, 1.7 MB
+  gzipped), search, nearest-station lookup, and ZIP download and unpacking.
+
+### What we deliberately do not use
+
+- **Its document model and writer.** cartes' geometry, matching, validation and undo are built on
+  its own document, which keeps every byte of the source and edits field by field. Replacing it
+  would gain nothing those layers need. So idfkit reads, cartes writes.
+- **`@idfkit/engine`.** We build EnergyPlus ourselves (see `browser-energy-simulation` below)
+  because we need PythonPlugin, which means EnergyPlus inside Pyodide.
+
+### Measured difference
+
+idfkit reports `AUTOCALCULATE` in a field whose schema lists only `Autosize`, and the reverse, as
+E004. Over the 164 EnergyPlus example files in the fixture corpus that is 836 findings, in files
+EnergyPlus runs (5ZoneAirCooled among them, in our engine), and they are the only E004 findings
+in the corpus. We accept the swap. The E009 (dangling reference) findings that remain are real, in fields
+EnergyPlus ignores when they are unused.
+
+---
+
+## idfkit-mcp — `idfkit/idfkit-mcp`
+
+An MCP server on idfkit (Python). MIT. 37 tools in ten categories plus 13 MCP resources: schema
+exploration, model read and write, validation, simulation and results, weather, a geometry viewer
+and a schedule heatmap (MCP Apps), version migration, and full-text search of the EnergyPlus docs.
+It depends on `openstudio` (to load OSM) and on a local EnergyPlus install, or a Docker image, to
+simulate. Session state is persisted to disk, so clients that restart the server between turns can
+resume.
+
+### ★ What we took
+
+- **The schema tools.** "What fields does this class take, and what values are valid?" answered
+  from the schema, with documentation links: our `find_classes` and `describe_class`.
+- **Generic object editing.** add / update / remove / rename / duplicate for any class, with
+  references following a rename: our `add_object`, `update_object`, `remove_object`,
+  `rename_object`, `duplicate_object`.
+- **Validation codes** shared with the library, so the agent and the Validation panel speak the
+  same codes as idfkit-mcp.
+- **Weather search and download**, and **results queries** after a run.
+
+### Where we differ
+
+- idfkit-mcp is a server process with Python and EnergyPlus beside it. Our tool registry is
+  TypeScript with no I/O, so the same tools serve a stdio MCP server and an agent inside the page,
+  which simulates in the browser and edits the document the user is looking at.
+- Every edit is one step in the UI's undo history, and in the app an edit waits for the user's
+  approval by default.
+
+---
+
+## EnergyPlus-MCP — `LBNL-ETA/EnergyPlus-MCP`
+
+LBNL's MCP server, described in Li, Xu and Hong, *EnergyPlus-MCP: A model-context-protocol server
+for AI-driven building energy modeling*, SoftwareX 32 (2025) 102367. Python on `eppy` and FastMCP,
+run in a Docker container with EnergyPlus 26.1. BSD-3-Clause-LBNL. 35 tools in five categories:
+model configuration and loading, inspection, modification, simulation and results, and server
+management.
+
+### ★ What we took: task-level helpers
+
+Its tools are named after the questions a modeler asks rather than after IDF classes, which
+suits a language model:
+
+| EnergyPlus-MCP | cartes |
+|---|---|
+| `check_simulation_settings`, `modify_simulation_control`, `modify_run_period` | `get_simulation_settings`, `set_simulation_settings` |
+| `inspect_people`, `inspect_lights`, `inspect_electric_equipment` | `inspect_loads` (also gas, hot-water, steam and other equipment, infiltration, ventilation; with per-floor-area values) |
+| `modify_people`, `modify_lights`, `modify_electric_equipment`, `change_infiltration_by_mult` | `scale_loads` |
+| `get_output_variables`, `get_output_meters`, `add_output_variables`, `add_output_meters` | `list_output_variables`, `add_outputs` |
+| `run_energyplus_simulation` | `run_simulation` |
+
+One detail matters for scaling loads across releases: the field a calculation method reads was
+renamed over time (`watts_per_zone_floor_area` became `watts_per_floor_area` in 22.x), but its
+position after the method field was not. `scale_loads` finds it by offset.
+
+### Not taken (yet)
+
+HVAC loop discovery, topology and diagrams; window films and coatings; interactive plots; file
+management (there is no file system in a page); server logs.
+
+---
+
+## idfkit-shoebox — `idfkit/idfkit-shoebox`
+
+The smallest showcase of EnergyPlus in the browser, on `@idfkit/engine` and
+`@idfkit/engine-assets`: `1ZoneUncontrolled.idf` (26.1) re-solved as design days in about 50 ms
+while sliders move, annual with a chosen weather location. It was the starting point for running
+EnergyPlus in a page; its engine build was not public when we looked, which is why we built our
+own.
+
+Its deployment notes are measured and transfer directly:
+
+- **Weather needs a proxy.** climate.onebuilding.org sends no CORS header. Shoebox rewrites
+  `/onebuilding` to the upstream at its CDN. GitHub Pages cannot, so cartes takes a configurable
+  proxy URL and ships a Cloudflare Worker for it (`proxy/weather-proxy.js`).
+- **Asset limits.** Cloudflare Pages caps single assets at 25 MiB, below the 28.4 MiB EnergyPlus
+  binary; GitHub Pages does not.
+- **`.gz` data is served as stored**, and inflated by the page — which is how cartes serves the
+  schema bundle and the station index too.
+
+---
+
+## browser-energy-simulation — `islammashaly-auc/browser-energy-simulation`
+
+The research artifact for Islam Mashaly's manuscript on a WebAssembly port of EnergyPlus v26.1
+validated against ASHRAE Standard 140. MIT. EnergyPlus pinned at `6f2e40d102`, five build-tooling
+patches and no physics-source edits, and a 21-case annual acceptance gate.
+
+This is the recipe our engine is built from. The fork (`luzechao/browser-energy-simulation`) adds
+PythonPlugin support by building EnergyPlus as a Pyodide side module (four more patches, and
+`-fvisibility=hidden` for C to stop a SQLite symbol clash with Pyodide's), and packages it as
+`@luzechao/sim-engine-wasm`.
+
+---
+
+## Summary: the lessons that matter most
 
 1. **From EPShape** — preprocess the IDD into a version-keyed field-name table. 25 KB solves
    EnergyPlus version drift permanently. Extend it past their five classes.
@@ -293,3 +431,14 @@ Taken from their own reference plugin's README:
    and is therefore our differentiator.
 3. **From Pascal** — flat node dictionary, dirty-node recomputation, scene registry, Zundo,
    and a declarative inspector driven by the field table.
+
+And for the agent and simulation, added later:
+
+4. **From idfkit** — content-addressed schemas make every class of every release cheap enough to
+   ship to a browser; read with idfkit, keep writing with our own lossless document.
+5. **From idfkit-mcp and EnergyPlus-MCP** — schema-level tools (describe, add, rename, validate)
+   and task-level helpers (settings, loads, outputs, results) together; define them once so an
+   MCP server and an in-app agent share them.
+6. **From browser-energy-simulation and idfkit-shoebox** — EnergyPlus in a page is a build and
+   hosting problem, not a physics one: pin the source, patch the tooling, gate on reference
+   results, and plan for CORS and asset-size limits.

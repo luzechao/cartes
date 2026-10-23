@@ -34,7 +34,8 @@ Open an existing `.idf`, see its geometry in 3D, edit it, simulate it, and write
   [Simulating](#simulating).
 - **Agent.** Chat with a language model that reads, edits, simulates and analyses the open model
   through cartes' own tools, with each edit approved first by default. See [Agent](#agent).
-- **MCP server.** Drive the same operations from an LLM outside the browser.
+- **MCP server.** Drive the same operations from an LLM client outside the browser. See
+  [MCP and tools](#mcp-and-tools).
 
 ## Why it exists
 
@@ -109,47 +110,126 @@ preprocessors, PixelCounting shading (EnergyPlus falls back to PolygonClipping) 
 ## Agent
 
 The ribbon's **Agent** tab puts a chat in the sidebar. The agent works on the open model through
-the same tools as the [MCP server](#getting-started), so it gets the same guarantees as the UI:
-field-level writes, twins kept in step, proposals before matching.
+the same tools as the MCP server, so it gets the same guarantees as the UI: field-level writes,
+twins kept in step, proposals before matching. All 40 of its tools are listed in
+[MCP and tools](#mcp-and-tools).
 
 - **Providers.** OpenAI, Anthropic, or any OpenAI-compatible URL (Ollama, LM Studio, vLLM,
   OpenRouter and similar), through the [Vercel AI SDK](https://ai-sdk.dev). Requests go straight
   from the browser to the provider with your own key; there is no cartes server. Keys stay in
   `sessionStorage` and are forgotten when the tab closes, unless **Remember keys** is checked. A
   local server must allow cross-origin requests from the page (for Ollama, set `OLLAMA_ORIGINS`).
-- **Tools.** Reading: `summary`, `list_objects`, `list_zones`, `list_surfaces`, `inspect`,
-  `validate`, `diff`, `propose_matches`, and `find_classes` and `describe_class` over every
-  EnergyPlus class. Geometry edits: `extrude_zone`, `add_opening`, `move_zone`, `delete_surface`,
-  `apply_matches`, `convert_simplified`. Edits to any class: `set_field`, `update_object`,
-  `add_object`, `rename_object` (references follow), `duplicate_object` and `remove_object`
-  (refused while referenced unless forced). Values the schema forbids are refused with the
-  reason. `undo` and `redo`; `run_python` in the
-  REPL's Pyodide interpreter, with `last_run` and `api` (for calculation and reading results;
-  Python cannot change the model); and `run_simulation`, with the Simulate tab's weather and
-  plugins. Opening, saving and replacing the file stay with the user.
+- **Tools.** Model tools read and edit the open model; agent-only tools run Python and
+  EnergyPlus, read the last run's results and find weather. Opening, saving and replacing the file
+  stay with the user.
 - **Edits.** **Ask before edits** (the default) holds each edit until you approve it on its card in
   the chat. A rejected edit is reported back to the agent, which is told not to retry it.
   **Apply automatically** skips the question. Either way, each tool call is one undo step, labelled
   "Agent: …", in the app's own history.
-- **Settings, loads, outputs.** `get_simulation_settings` and `set_simulation_settings` (time
-  step, run period, SimulationControl); `inspect_loads` (people, lights, equipment, infiltration
-  and ventilation, with per-floor-area values) and `scale_loads`, which multiplies whichever field
-  each object's calculation method reads; `add_outputs` for variables and meters.
-- **Results.** `results_summary` (site and source energy, EUI, end uses by fuel, unmet hours),
-  `list_report_tables` and `get_report_table` for the tabular reports, `list_output_variables`
-  (reported, and requestable from the `.rdd`/`.mdd`), `get_timeseries` (statistics and monthly
-  values, aggregated in SQL) and `query_results` (one read-only SELECT). They read the last run's
-  `eplusout.sql` with Python's `sqlite3` in the Pyodide interpreter. `run_simulation` adds
-  `Output:SQLite`, `Output:VariableDictionary` and `Output:Table:SummaryReports` to the text it
-  simulates when the model lacks them; the model itself is not changed.
-- **Weather.** `search_weather`, `use_weather`, and `apply_design_conditions`, which replaces the
-  design days with the station's DDY (annual 99.6% heating and 0.4% cooling by default) and sets
-  Site:Location.
 - **Context.** Each turn tells the agent the file, its counts and validation state, the selected
   object, the weather file and the last run.
 
 The AI SDK loads only when the first message is sent, so it adds nothing to the app's initial
 download.
+
+## MCP and tools
+
+cartes' model operations are defined once, as a registry of tools in
+[`src/mcp/tools.ts`](src/mcp/tools.ts): each is a `ModelSession` method with a zod input schema, a
+description written for a language model, and a kind (`read`, `edit` or `destructive`). Two hosts
+serve them:
+
+- **The MCP server** (`npm run mcp`, stdio) for any MCP client: Claude Desktop, VS Code, Cursor
+  and others. It adds `open_idf` and `save_idf`, which touch the disk: 32 tools.
+- **The in-app agent** (the Agent tab) runs them against the document open in the app, asks before
+  edits, and adds tools that need the browser's engine: 40 tools.
+
+Either way, objects are addressed by name (unnamed singletons such as `Timestep` by class),
+results are JSON, a refused operation returns the reason so the model can correct itself, values
+the schema forbids are refused, and every edit is one step in the same undo history the UI uses.
+Nothing is written to disk until `save_idf`.
+
+Register the server with an MCP client as a command. For Claude Desktop
+(`claude_desktop_config.json`), with the repository set up (`npm install && npm run setup`):
+
+```json
+{
+  "mcpServers": {
+    "cartes": {
+      "command": "npx",
+      "args": ["tsx", "/path/to/cartes/scripts/mcp-server.ts"]
+    }
+  }
+}
+```
+
+| Tool | Kind | MCP | Agent | What it does |
+|---|---|:---:|:---:|---|
+| **Files** | | | | |
+| `open_idf` | read | ✓ | | Open an `.idf` from disk |
+| `save_idf` | write | ✓ | | Write the model to an `.idf` |
+| `new_model` | destructive | ✓ | | Start a runnable model from the authoring template |
+| **Reading** | | | | |
+| `summary` | read | ✓ | ✓ | Version, counts, errors and warnings, what undo would undo |
+| `list_objects` | read | ✓ | ✓ | Classes with counts, or the names in one class |
+| `inspect` | read | ✓ | ✓ | Every field of one object, with names and units |
+| `list_zones` | read | ✓ | ✓ | Zones with floor area and origin |
+| `list_surfaces` | read | ✓ | ✓ | Surfaces with type, construction, boundary, area and world vertices |
+| `validate` | read | ✓ | ✓ | Geometry checks as EnergyPlus raises them, then field checks over every class |
+| `diff` | read | ✓ | ✓ | Unified diff since the file was opened |
+| **Schema** | | | | |
+| `find_classes` | read | ✓ | ✓ | Search all ~850 EnergyPlus classes by words in name or group |
+| `describe_class` | read | ✓ | ✓ | Fields of a class: units, choices, bounds, defaults, references, notes |
+| **Editing any class** | | | | |
+| `set_field` | edit | ✓ | ✓ | One field, by name or index |
+| `update_object` | edit | ✓ | ✓ | Several fields, all or none |
+| `add_object` | edit | ✓ | ✓ | A new object, repeating groups included |
+| `rename_object` | edit | ✓ | ✓ | Rename and update every reference |
+| `duplicate_object` | edit | ✓ | ✓ | Copy under a new name |
+| `remove_object` | destructive | ✓ | ✓ | Delete; refused while referenced unless forced |
+| **Geometry** | | | | |
+| `extrude_zone` | edit | ✓ | ✓ | A zone from a plan outline: walls, floor, roof |
+| `add_opening` | edit | ✓ | ✓ | A window or door that fits, mirrored on interzone walls |
+| `move_zone` | edit | ✓ | ✓ | Translate a zone; reports pairs it pulls apart |
+| `delete_surface` | destructive | ✓ | ✓ | A surface and its openings; twins left or made adiabatic |
+| `propose_matches` | read | ✓ | ✓ | Interzone pairings the geometry implies, with exact field changes |
+| `apply_matches` | edit | ✓ | ✓ | Apply some or all proposals |
+| `convert_simplified` | edit | ✓ | ✓ | Simplified surface classes to explicit vertices |
+| **Settings, loads, outputs** | | | | |
+| `get_simulation_settings` | read | ✓ | ✓ | Time step, run periods, SimulationControl, location, design days |
+| `set_simulation_settings` | edit | ✓ | ✓ | Time step, a run period's dates, SimulationControl flags |
+| `inspect_loads` | read | ✓ | ✓ | People, lights, equipment, infiltration, ventilation, per floor area |
+| `scale_loads` | edit | ✓ | ✓ | Multiply the value each object's calculation method uses |
+| `add_outputs` | edit | ✓ | ✓ | Output variables and meters, skipping duplicates |
+| **History** | | | | |
+| `undo`, `redo` | edit | ✓ | ✓ | The same history the UI uses |
+| **Simulation** | | | | |
+| `run_simulation` | run | | ✓ | EnergyPlus 26.1 in the browser, with the Simulate tab's weather and plugins |
+| `run_python` | run | | ✓ | Python in the Pyodide interpreter shared with the REPL (`last_run`, `api`) |
+| **Results** | | | | |
+| `results_summary` | read | | ✓ | Site and source energy, EUI, end uses by fuel, unmet hours |
+| `list_report_tables` | read | | ✓ | Tabular reports and their tables |
+| `get_report_table` | read | | ✓ | One table as rows × columns with units |
+| `list_output_variables` | read | | ✓ | Reported variables and meters, and those the model could request |
+| `get_timeseries` | read | | ✓ | Statistics and monthly values of a variable or meter |
+| `query_results` | read | | ✓ | One read-only SELECT against `eplusout.sql` |
+| **Weather** | | | | |
+| `search_weather` | read | | ✓ | TMYx stations by place, or nearest the model's Site:Location |
+| `use_weather` | run | | ✓ | Download a station's EPW and DDY; use the EPW for simulations |
+| `apply_design_conditions` | edit | | ✓ | The station's design days and Site:Location into the model |
+
+The host-only kinds: `write` touches the disk; `run` uses the engine or the network and does not
+change the model. In the agent, `edit` and `destructive` tools wait for approval under
+**Ask before edits**; `read` and `run` tools do not.
+
+Results tools read the last run's `eplusout.sql` with Python's `sqlite3` in the Pyodide
+interpreter, aggregating in SQL so that only summaries cross into the page. `run_simulation`
+adds `Output:SQLite`, `Output:VariableDictionary` and `Output:Table:SummaryReports` to the text it
+simulates when the model lacks them; the model itself is not changed. The Simulate tab's own
+**Simulate** runs the model exactly as written.
+
+The tool set learns from two existing EnergyPlus MCP servers, idfkit-mcp and LBNL's
+EnergyPlus-MCP; [`docs/02-prior-art.md`](docs/02-prior-art.md) compares them.
 
 ## Weather downloads
 
@@ -169,8 +249,8 @@ document and every write; idfkit only reads. The bundle is copied to `public/sch
 `predev`/`prebuild` (`scripts/copy-data.mjs`) and fetched when a file is opened.
 
 Field checks follow idfkit's codes (E002–E010) with one exception: `Autosize` and `Autocalculate`
-are accepted for each other. EnergyPlus does the same, and 836 such values occur in 164 of its own
-example files.
+are accepted for each other. EnergyPlus does the same: its own example files, which run, hold 836
+such values across the 164 we validate.
 
 ## Getting started
 
@@ -208,14 +288,7 @@ export NODE_EXTRA_CA_CERTS=/etc/ssl/cert.pem
 **Deployment.** `.github/workflows/pages.yml` typechecks, tests, builds and deploys to GitHub Pages
 on every push to `main`.
 
-**MCP.** `npm run mcp` serves 32 tools, including `open_idf`, `new_model`, `find_classes`,
-`describe_class`, `add_object`, `rename_object`, `set_simulation_settings`, `inspect_loads`,
-`scale_loads`, `add_outputs`, `extrude_zone`, `apply_matches`, `validate`, `save_idf` and `undo`.
-Simulation, results and weather are the in-app agent's only. Register it in an MCP client with the command `npx tsx scripts/mcp-server.ts`,
-run from the repository root. The tools address objects by name (unnamed singletons such as
-`Timestep` by class), return JSON, and share the UI's code and undo history. They are defined once
-in `src/mcp/tools.ts` and also serve the in-app agent. Nothing is written to disk until `save_idf`
-is called.
+**MCP.** `npm run mcp` serves the model tools over stdio; see [MCP and tools](#mcp-and-tools).
 
 ## Code layout
 
@@ -239,7 +312,7 @@ is called.
 | Doc | Contents |
 |---|---|
 | [`docs/01-landscape.md`](docs/01-landscape.md) | Ecosystem survey, the gap, who this is for |
-| [`docs/02-prior-art.md`](docs/02-prior-art.md) | Lessons from EPShape, VI-Suite, Pascal Editor, verified at source level |
+| [`docs/02-prior-art.md`](docs/02-prior-art.md) | Lessons from EPShape, VI-Suite, Pascal Editor, idfkit, idfkit-mcp, EnergyPlus-MCP, idfkit-shoebox and browser-energy-simulation, verified at source level |
 | [`docs/03-idf-geometry.md`](docs/03-idf-geometry.md) | IDF geometry domain reference: classes, field orders, coordinate rules, gotchas |
 | [`docs/04-architecture.md`](docs/04-architecture.md) | System design and the decisions behind it |
 | [`docs/05-implementation-plan.md`](docs/05-implementation-plan.md) | Phased build plan, with what each phase measured |
