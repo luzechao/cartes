@@ -54,6 +54,10 @@ jobs:
       # The in-browser simulation engine and Pyodide runtime, served from public/sim-engine/.
       - run: npx sim-engine-wasm-assets public/sim-engine
 
+      # The EnergyPlus schema bundle and weather-station index, fetched by the page on demand from
+      # public/schemas/ and public/weather/ (`npm run build` does this in `prebuild`).
+      - run: node scripts/copy-data.mjs
+
       - run: npx vite build
         env:
           CARTES_BASE: /${{ github.event.repository.name }}/
