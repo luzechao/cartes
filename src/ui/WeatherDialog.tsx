@@ -26,6 +26,19 @@ export function WeatherDialog({ site, proxy, onProxyChange, onUse, onClose }: Pr
 
   useEffect(() => input.current?.focus(), [])
 
+  // On the window, not the dialog: the buttons disable themselves while busy, which drops focus
+  // to the page, where the dialog's own key handler would never hear Escape.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') {
+        e.stopPropagation()
+        onClose()
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [onClose])
+
   const search = async (near: boolean): Promise<void> => {
     setBusy('search')
     setError(undefined)
@@ -55,15 +68,7 @@ export function WeatherDialog({ site, proxy, onProxyChange, onUse, onClose }: Pr
   }
 
   return (
-    <div
-      className="dialog-backdrop"
-      onKeyDown={(e) => {
-        if (e.key === 'Escape') {
-          e.stopPropagation()
-          onClose()
-        }
-      }}
-    >
+    <div className="dialog-backdrop">
       <div className="dialog weather-dialog" role="dialog" aria-label="Find weather">
         <h2 className="dialog__title">Find weather</h2>
         <p className="dialog__line">TMYx weather files from climate.onebuilding.org: about 69,000 stations worldwide.</p>
