@@ -31,6 +31,7 @@ import {
   PackageIcon,
   PaletteIcon,
   PluginIcon,
+  PythonIcon,
   RedoIcon,
   ReportIcon,
   RunIcon,
@@ -45,7 +46,7 @@ import {
   WindowIcon,
 } from './icons.js'
 
-type RibbonTab = 'geometry' | 'simulate'
+export type RibbonTab = 'geometry' | 'simulate'
 
 export type EditMode = 'off' | 'vertex' | 'corner' | 'draw'
 
@@ -102,6 +103,8 @@ export interface GeometryCommands {
 }
 
 interface RibbonProps {
+  tab: RibbonTab
+  onTabChange: (tab: RibbonTab) => void
   /** One-line description of the open model, shown at the right of the tab row. */
   meta: string | undefined
   hasModel: boolean
@@ -113,14 +116,15 @@ interface RibbonProps {
   onRun: () => void
   consoleVisible: boolean
   onToggleConsole: () => void
+  pythonVisible: boolean
+  onTogglePython: () => void
 }
 
 export function Ribbon(props: RibbonProps): React.JSX.Element {
-  const [tab, setTab] = useState<RibbonTab>('geometry')
-  const { simulation } = props
+  const { simulation, tab } = props
 
   const selectTab = (next: RibbonTab): void => {
-    setTab(next)
+    props.onTabChange(next)
     // Fetch the ~45 MB engine as soon as the user shows interest, so Simulate is ready when clicked.
     if (next === 'simulate' && props.hasModel) simulation.loadEngine()
   }
@@ -530,6 +534,16 @@ function SimulateTab(props: RibbonProps): React.JSX.Element {
           disabled={off}
           active={props.consoleVisible}
           title="Console output, messages and output files in the sidebar"
+        />
+      </RibbonGroup>
+
+      <RibbonGroup label="Python">
+        <RibbonButton
+          icon={<PythonIcon />}
+          label="Python"
+          onClick={props.onTogglePython}
+          active={props.pythonVisible}
+          title="Python REPL in the simulation environment: the Pyodide interpreter that runs PythonPlugins"
         />
       </RibbonGroup>
     </>

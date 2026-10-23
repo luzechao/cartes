@@ -351,3 +351,15 @@ export function StoriesIcon(props: IconProps): React.JSX.Element {
     </Svg>
   )
 }
+
+/** Two interlocking lobes with an eye each, after the Python logo. */
+export function PythonIcon(props: IconProps): React.JSX.Element {
+  return (
+    <Svg {...props}>
+      <path d="M12 3.5H9.5A2.5 2.5 0 0 0 7 6v2h5.5M7 8H5.5A2.5 2.5 0 0 0 3 10.5v3A2.5 2.5 0 0 0 5.5 16H7M7 16v-2a2.5 2.5 0 0 1 2.5-2.5h5A2.5 2.5 0 0 0 17 9V6a2.5 2.5 0 0 0-2.5-2.5H12" />
+      <path d="M12 20.5h2.5A2.5 2.5 0 0 0 17 18v-2h-5.5M17 16h1.5a2.5 2.5 0 0 0 2.5-2.5v-3A2.5 2.5 0 0 0 18.5 8H17M17 8v2a2.5 2.5 0 0 1-2.5 2.5h-5A2.5 2.5 0 0 0 7 15v3a2.5 2.5 0 0 0 2.5 2.5H12" />
+      <circle cx="9.6" cy="5.8" r="0.9" fill="currentColor" stroke="none" />
+      <circle cx="14.4" cy="18.2" r="0.9" fill="currentColor" stroke="none" />
+    </Svg>
+  )
+}

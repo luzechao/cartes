@@ -45,6 +45,8 @@ export interface Simulation {
   /** EnergyPlus console output of the current or last run. */
   log: string[]
   loadEngine(): void
+  /** Replace the worker (and its interpreter) with a fresh one, then load the engine again. */
+  restartEngine(): void
   setEpw(file: File | undefined): void
   setPluginFiles(files: File[]): void
   setPackages(packages: string): void
@@ -98,6 +100,12 @@ export function useSimulation(): Simulation {
       })
   }, [])
 
+  const restartEngine = useCallback(() => {
+    sharedSimulationClient().restart()
+    loading.current = false
+    loadEngine()
+  }, [loadEngine])
+
   const run = useCallback(
     async (idf: string, modelName: string, edited: boolean) => {
       loadEngine()
@@ -137,6 +145,7 @@ export function useSimulation(): Simulation {
     runError,
     log,
     loadEngine,
+    restartEngine,
     setEpw,
     setPluginFiles,
     setPackages,

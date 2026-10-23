@@ -70,7 +70,8 @@ EnergyPlus 26.1 itself: the edited file must run without new severe errors.
 
 The ribbon's **Simulate** tab runs the current model through EnergyPlus 26.1.0 in a Web Worker,
 using [`@luzechao/sim-engine-wasm`](https://github.com/luzechao/browser-energy-simulation/tree/main/packages/sim-engine-wasm):
-EnergyPlus compiled to WebAssembly and loaded into Pyodide 314.
+EnergyPlus compiled to WebAssembly and loaded into Pyodide 314. The sidebar follows the ribbon:
+Geometry shows Inspector, Validation and Matching; Simulate shows Simulate and Python.
 
 - **Inputs.** Load an EPW weather file. Without one, only the model's design days run
   (`energyplus -D`). Load the `.py` modules named by `PythonPlugin:Instance` objects, and list any
@@ -78,6 +79,12 @@ EnergyPlus compiled to WebAssembly and loaded into Pyodide 314.
 - **Results.** The sidebar's Simulate tab shows the run status, the live EnergyPlus console, the
   warning, severe and fatal messages, and every output file to download. **Report** opens
   `eplustbl.htm`.
+- **Python.** **Simulate → Python** opens a Python REPL in the same Pyodide interpreter that runs
+  PythonPlugins, with EnergyPlus loaded. `api` is pyenergyplus's `EnergyPlusAPI`, and `last_run` is
+  the last simulation's output directory, so `open(f"{last_run}/eplusout.err").read()` works.
+  Pyodide packages are fetched when imported, and top-level `await` is allowed. **Restart**
+  replaces the interpreter, which is the way out of code that never returns. It works with no model
+  open.
 - **Examples.** **Geometry → Examples** opens two EnergyPlus 26.1 models from `public/examples/`,
   `5ZoneAirCooled` and `PythonPluginCustomOutputVariable`, with the Chicago weather file and, for
   the second, its plugin module, so they run in one click.
@@ -142,8 +149,8 @@ history. Nothing is written to disk until `save_idf` is called.
 | `src/model/` | Building model over the document: names, references, edits, undo history, templates |
 | `src/geometry/` | Coordinate resolution, validation, snapping, dragging, creation, matching, tier-3 conversion |
 | `src/render/` | three.js scene, viewer and story display |
-| `src/simulate/` | Simulation engine (`engine.ts`), its Web Worker (`worker.ts`) and the UI's client (`client.ts`) |
-| `src/ui/` | React shell: ribbon (`Ribbon.tsx`, `icons.tsx`), panels, dialogs, examples |
+| `src/simulate/` | Simulation engine and Python REPL (`engine.ts`), its Web Worker (`worker.ts`) and the UI's client (`client.ts`) |
+| `src/ui/` | React shell: ribbon (`Ribbon.tsx`, `icons.tsx`), panels including the Python REPL, dialogs, examples |
 | `src/mcp/` | MCP server and session |
 | `test/` | Unit tests, corpus and round-trip gates, EnergyPlus gates, simulation tests |
 

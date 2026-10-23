@@ -29,10 +29,15 @@ scope.onmessage = async ({ data }) => {
   try {
     if (data.type === 'init') {
       scope.postMessage({ id: data.id, type: 'init', info: (await getEngine()).info })
-    } else {
+    } else if (data.type === 'run') {
       const outcome = await (await getEngine()).run(data.request)
       const transfer = Object.values(outcome.outputs).map((bytes) => bytes.buffer as ArrayBuffer)
       scope.postMessage({ id: data.id, type: 'run', outcome }, transfer)
+    } else {
+      const outcome = await (await getEngine()).exec(data.code, (stream, line) =>
+        scope.postMessage({ id: data.id, type: 'output', stream, line }),
+      )
+      scope.postMessage({ id: data.id, type: 'exec', outcome })
     }
   } catch (error) {
     if (data.type === 'init') engine = undefined

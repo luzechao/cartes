@@ -32,18 +32,38 @@ export interface SimulationOutcome {
 export interface EngineInfo {
   energyPlusVersion: string
   pyodideVersion: string
+  /** CPython version inside Pyodide, e.g. "3.14.2". */
+  pythonVersion: string
   /** pyenergyplus API version. */
   apiVersion: string
   /** Time to load Pyodide and the engine, in seconds. */
   seconds: number
 }
 
+/** Where a line printed by Python code in the REPL came from. `info` is Pyodide's package-loading messages. */
+export type OutputStream = 'out' | 'err' | 'info'
+
+/** Result of one REPL submission. */
+export interface ExecOutcome {
+  ok: boolean
+  /** `repr()` of the last expression, when it was not None. */
+  value?: string | undefined
+  /** Python traceback, for a submission that raised. */
+  error?: string | undefined
+  seconds: number
+}
+
 export type WorkerRequest =
   | { id: number; type: 'init' }
   | { id: number; type: 'run'; request: SimulationRequest }
+  | { id: number; type: 'exec'; code: string }
 
 export type WorkerResponse =
   | { id: number; type: 'init'; info: EngineInfo }
   | { id: number; type: 'run'; outcome: SimulationOutcome }
+  | { id: number; type: 'exec'; outcome: ExecOutcome }
   | { id: number; type: 'error'; message: string }
+  /** EnergyPlus console output during a simulation. */
   | { type: 'log'; line: string }
+  /** Output of a running REPL submission, streamed as it is printed. */
+  | { id: number; type: 'output'; stream: OutputStream; line: string }

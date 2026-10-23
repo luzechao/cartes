@@ -35,7 +35,12 @@ class ConstantWriter(EnergyPlusPlugin):
 
 describe.skipIf(!existsSync(fixture))('simulation engine (Node)', () => {
   it('simulates design days and runs a PythonPlugin', { timeout: 180_000 }, async () => {
-    const engine = await createEngine({ indexURL: pyodideDir, readAsset: (name) => readFile(join(assets, name)) })
+    const logLines: string[] = []
+    const engine = await createEngine({
+      indexURL: pyodideDir,
+      readAsset: (name) => readFile(join(assets, name)),
+      onLog: (line) => logLines.push(line),
+    })
     expect(engine.info.energyPlusVersion).toBe('26.1.0')
 
     const idf = readFileSync(fixture, 'utf8') + PLUGIN_OBJECTS
@@ -59,5 +64,38 @@ describe.skipIf(!existsSync(fixture))('simulation engine (Node)', () => {
       .map((line) => Number(line.split(',')[1]))
     expect(values.length).toBeGreaterThan(0)
     expect(new Set(values)).toEqual(new Set([42]))
+
+    // The REPL runs in the same interpreter, after the run.
+    const repl = async (code: string): Promise<{ outcome: Awaited<ReturnType<typeof engine.exec>>; out: string[] }> => {
+      const out: string[] = []
+      const result = await engine.exec(code, (stream, line) => out.push(`${stream}:${line}`))
+      return { outcome: result, out }
+    }
+
+    const printed = await repl('print("a"); print("b", end="")\n6 * 7')
+    expect(printed.outcome).toMatchObject({ ok: true, value: '42' })
+    expect(printed.out).toEqual(['out:a', 'out:b'])
+
+    expect((await repl('x = 5')).outcome).toMatchObject({ ok: true, value: undefined })
+    expect((await repl('x + 1')).outcome).toMatchObject({ ok: true, value: '6' })
+
+    const failed = await repl('def f():\n    return 1 / 0\nf()')
+    expect(failed.outcome.ok).toBe(false)
+    expect(failed.outcome.error).toMatch(/^Traceback[\s\S]*File "<python>", line 3[\s\S]*ZeroDivisionError: division by zero$/)
+    expect(failed.outcome.error).not.toMatch(/_pyodide|eval_code_async/)
+
+    const syntax = await repl('def broken(:')
+    expect(syntax.outcome.error).toMatch(/SyntaxError/)
+
+    const env = await repl(
+      'import os\n(type(api).__name__, sorted(f for f in os.listdir(last_run) if f in ("eplusout.err", "eplusout.eso")))',
+    )
+    expect(env.outcome.value).toBe("('EnergyPlusAPI', ['eplusout.err', 'eplusout.eso'])")
+
+    expect((await repl('import asyncio\nawait asyncio.sleep(0)\n"awaited"')).outcome.value).toBe("'awaited'")
+
+    // The run's console output went to the simulation log, and REPL output did not.
+    expect(logLines).toContain('EnergyPlus Completed Successfully.')
+    expect(logLines).not.toContain('a')
   })
 })

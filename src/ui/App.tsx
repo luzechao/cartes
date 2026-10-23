@@ -64,7 +64,9 @@ import { ObjectTree } from './ObjectTree.js'
 import { Inspector } from './Inspector.js'
 import { DiffPanel } from './DiffPanel.js'
 import { MatchPanel } from './MatchPanel.js'
-import { Ribbon } from './Ribbon.js'
+import { Ribbon, type RibbonTab } from './Ribbon.js'
+import { PythonPanel } from './PythonPanel.js'
+import { usePython } from './usePython.js'
 import { SimulatePanel } from './SimulatePanel.js'
 import { useSimulation } from './useSimulation.js'
 import { EXAMPLES, fetchExample, type Example } from './examples.js'
@@ -152,7 +154,10 @@ interface BuildStats {
   skipped: number
 }
 
-type RightPanelTab = 'inspector' | 'validation' | 'matching' | 'simulate'
+/** Sidebar tabs. Each ribbon tab has its own: Geometry shows the first three, Simulate the last two. */
+type GeometryPanelTab = 'inspector' | 'validation' | 'matching'
+type SimulatePanelTab = 'simulate' | 'python'
+type RightPanelTab = GeometryPanelTab | SimulatePanelTab
 type ValidationFilter = 'all' | 'error' | 'warning'
 
 export function App(): React.JSX.Element {
@@ -168,7 +173,21 @@ export function App(): React.JSX.Element {
 
   const [showTree, setShowTree] = useState(true)
   const [showRightPanel, setShowRightPanel] = useState(true)
-  const [rightTab, setRightTab] = useState<RightPanelTab>('inspector')
+  const [ribbonTab, setRibbonTab] = useState<RibbonTab>('geometry')
+  // The sidebar remembers a tab per ribbon tab and shows the one belonging to the active ribbon tab.
+  const [geometryPanel, setGeometryPanel] = useState<GeometryPanelTab>('inspector')
+  const [simulatePanel, setSimulatePanel] = useState<SimulatePanelTab>('simulate')
+  const rightTab: RightPanelTab = ribbonTab === 'geometry' ? geometryPanel : simulatePanel
+  /** Show a sidebar tab, switching the ribbon to the tab it belongs to. */
+  const setRightTab = useCallback((tab: RightPanelTab) => {
+    if (tab === 'simulate' || tab === 'python') {
+      setSimulatePanel(tab)
+      setRibbonTab('simulate')
+    } else {
+      setGeometryPanel(tab)
+      setRibbonTab('geometry')
+    }
+  }, [])
   const [validationFilter, setValidationFilter] = useState<ValidationFilter>('all')
   const [showDiff, setShowDiff] = useState(false)
 
@@ -182,6 +201,7 @@ export function App(): React.JSX.Element {
   const [display, setDisplay] = useState<DisplayState>({ mode: 'stacked' })
   const { ask, element: dialog } = useDialog()
   const simulation = useSimulation()
+  const python = usePython(simulation)
 
   // Pointer and keyboard handlers outlive a render; they read the current state through these.
   const loadedRef = useRef<LoadedFile | undefined>(undefined)
@@ -308,7 +328,7 @@ export function App(): React.JSX.Element {
       setNotice(undefined)
       setSelectedId(undefined)
       setShowRightPanel(true)
-      setRightTab(validation.issues.length > 0 ? 'validation' : 'inspector')
+      setGeometryPanel(validation.issues.length > 0 ? 'validation' : 'inspector')
     } catch (cause) {
       setLoaded(undefined)
       setError(cause instanceof Error ? cause.message : String(cause))
@@ -512,7 +532,7 @@ export function App(): React.JSX.Element {
       interiorConstructions: suggestInteriorConstructions(after.doc, after.model),
     }).proposals.filter((p) => created.has(p.a) || created.has(p.b))
     if (pairs.length > 0) {
-      setRightTab('matching')
+      setGeometryPanel('matching')
       setShowRightPanel(true)
     }
     setNotice(
@@ -571,7 +591,7 @@ export function App(): React.JSX.Element {
         setSelectedId(hit?.id)
         viewerRef.current?.select(hit?.id)
         if (hit?.id) {
-          setRightTab('inspector')
+          setGeometryPanel('inspector')
           setShowRightPanel(true)
         }
       }
@@ -832,7 +852,7 @@ export function App(): React.JSX.Element {
   const selectObject = useCallback((id: string) => {
     setSelectedId(id)
     viewerRef.current?.select(id)
-    setRightTab('inspector')
+    setGeometryPanel('inspector')
     setShowRightPanel(true)
   }, [])
 
@@ -844,7 +864,7 @@ export function App(): React.JSX.Element {
     setSelectedId(issue.objectId)
     viewerRef.current?.select(issue.objectId)
     viewerRef.current?.focus(issue.objectId)
-    setRightTab('validation')
+    setGeometryPanel('validation')
   }, [])
 
   // Inspector edits can touch anything — a vertex coordinate, a zone origin, GlobalGeometryRules
@@ -1088,7 +1108,7 @@ export function App(): React.JSX.Element {
   const runSimulation = (): void => {
     if (!loaded) return
     // Bring the console into view so the run can be followed.
-    setRightTab('simulate')
+    setSimulatePanel('simulate')
     setShowRightPanel(true)
     void simulation.run(currentText, loaded.name, dirtyObjects.length > 0)
   }
@@ -1104,6 +1124,8 @@ export function App(): React.JSX.Element {
       onDrop={onDrop}
     >
       <Ribbon
+        tab={ribbonTab}
+        onTabChange={setRibbonTab}
         meta={
           loaded
             ? `${loaded.name} · EnergyPlus ${loaded.model.version} · ${loaded.model.rules.coordinateSystem} coordinates · ${loaded.model.zones.size} zones · ${stats?.drawn ?? 0} surfaces · ${Math.round(loaded.ms)} ms`
@@ -1171,6 +1193,8 @@ export function App(): React.JSX.Element {
         onRun={runSimulation}
         consoleVisible={showRightPanel && rightTab === 'simulate'}
         onToggleConsole={() => toggleRightTab('simulate')}
+        pythonVisible={showRightPanel && rightTab === 'python'}
+        onTogglePython={() => toggleRightTab('python')}
       />
 
       <div className="workspace">
@@ -1254,42 +1278,38 @@ export function App(): React.JSX.Element {
           )}
         </div>
 
-        {/* Right Drawer: Inspector, Validation, Matching or Simulate */}
-        {loaded && showRightPanel && (
+        {/* Right Drawer: Inspector, Validation and Matching under Geometry; Simulate and Python under Simulate */}
+        {showRightPanel && (loaded || rightTab === 'python') && (
           <aside className="right-panel">
             <div className="right-panel__tabs">
-              <button
-                type="button"
-                className={`right-panel__tab${rightTab === 'inspector' ? ' right-panel__tab--active' : ''}`}
-                onClick={() => setRightTab('inspector')}
-              >
-                Inspector
-              </button>
-              <button
-                type="button"
-                className={`right-panel__tab${rightTab === 'validation' ? ' right-panel__tab--active' : ''}`}
-                onClick={() => setRightTab('validation')}
-              >
-                Validation ({validation?.issues.length ?? 0})
-              </button>
-              <button
-                type="button"
-                className={`right-panel__tab${rightTab === 'matching' ? ' right-panel__tab--active' : ''}`}
-                onClick={() => setRightTab('matching')}
-              >
-                Matching ({matchReport?.proposals.length ?? 0})
-              </button>
-              <button
-                type="button"
-                className={`right-panel__tab${rightTab === 'simulate' ? ' right-panel__tab--active' : ''}`}
-                onClick={() => setRightTab('simulate')}
-              >
-                Simulate
-              </button>
+              {(ribbonTab === 'geometry'
+                ? ([
+                    ['inspector', 'Inspector'],
+                    ['validation', `Validation (${validation?.issues.length ?? 0})`],
+                    ['matching', `Matching (${matchReport?.proposals.length ?? 0})`],
+                  ] as const)
+                : loaded
+                  ? ([
+                      ['simulate', 'Simulate'],
+                      ['python', 'Python'],
+                    ] as const)
+                  : ([['python', 'Python']] as const)
+              ).map(([tab, label]) => (
+                <button
+                  key={tab}
+                  type="button"
+                  className={`right-panel__tab${rightTab === tab ? ' right-panel__tab--active' : ''}`}
+                  onClick={() => setRightTab(tab)}
+                >
+                  {label}
+                </button>
+              ))}
             </div>
 
             <div className="right-panel__body">
-              {rightTab === 'simulate' ? (
+              {rightTab === 'python' ? (
+                <PythonPanel simulation={simulation} repl={python} />
+              ) : !loaded ? null : rightTab === 'simulate' ? (
                 <SimulatePanel simulation={simulation} idfVersion={loaded.model.versionResolution.declared} />
               ) : rightTab === 'matching' && matchReport ? (
                 <MatchPanel
