@@ -29,7 +29,9 @@ Open an existing `.idf`, see its geometry in 3D, edit it, simulate it, and write
 - **Simulation in the browser.** Run the current model, unsaved edits included, through
   EnergyPlus 26.1 compiled to WebAssembly, with **PythonPlugin** support. See
   [Simulating](#simulating).
-- **MCP server.** Drive the same operations from an LLM.
+- **Agent.** Chat with a language model that reads, edits, simulates and analyses the open model
+  through cartes' own tools, with each edit approved first by default. See [Agent](#agent).
+- **MCP server.** Drive the same operations from an LLM outside the browser.
 
 ## Why it exists
 
@@ -71,7 +73,8 @@ EnergyPlus 26.1 itself: the edited file must run without new severe errors.
 The ribbon's **Simulate** tab runs the current model through EnergyPlus 26.1.0 in a Web Worker,
 using [`@luzechao/sim-engine-wasm`](https://github.com/luzechao/browser-energy-simulation/tree/main/packages/sim-engine-wasm):
 EnergyPlus compiled to WebAssembly and loaded into Pyodide 314. The sidebar follows the ribbon:
-Geometry shows Inspector, Validation and Matching; Simulate shows Simulate and Python.
+Geometry shows Inspector, Validation and Matching; Simulate shows Simulate and Python; Agent shows
+Chat.
 
 - **Inputs.** Load an EPW weather file. Without one, only the model's design days run
   (`energyplus -D`). Load the `.py` modules named by `PythonPlugin:Instance` objects, and list any
@@ -98,6 +101,33 @@ Geometry shows Inspector, Validation and Matching; Simulate shows Simulate and P
 Not available in the browser build: ExpandObjects (`HVACTemplate:*`), the Slab and Basement
 preprocessors, PixelCounting shading (EnergyPlus falls back to PolygonClipping) and
 `ExternalInterface`.
+
+## Agent
+
+The ribbon's **Agent** tab puts a chat in the sidebar. The agent works on the open model through
+the same tools as the [MCP server](#getting-started), so it gets the same guarantees as the UI:
+field-level writes, twins kept in step, proposals before matching.
+
+- **Providers.** OpenAI, Anthropic, or any OpenAI-compatible URL (Ollama, LM Studio, vLLM,
+  OpenRouter and similar), through the [Vercel AI SDK](https://ai-sdk.dev). Requests go straight
+  from the browser to the provider with your own key; there is no cartes server. Keys stay in
+  `sessionStorage` and are forgotten when the tab closes, unless **Remember keys** is checked. A
+  local server must allow cross-origin requests from the page (for Ollama, set `OLLAMA_ORIGINS`).
+- **Tools.** `summary`, `list_objects`, `list_zones`, `list_surfaces`, `inspect`, `validate`,
+  `diff`, `propose_matches`; the edits `set_field`, `extrude_zone`, `add_opening`, `move_zone`,
+  `delete_surface`, `apply_matches`, `convert_simplified`, `undo` and `redo`; `run_python` in the
+  REPL's Pyodide interpreter, with `last_run` and `api` (for calculation and reading results;
+  Python cannot change the model); and `run_simulation`, with the Simulate tab's weather and
+  plugins. Opening, saving and replacing the file stay with the user.
+- **Edits.** **Ask before edits** (the default) holds each edit until you approve it on its card in
+  the chat. A rejected edit is reported back to the agent, which is told not to retry it.
+  **Apply automatically** skips the question. Either way, each tool call is one undo step, labelled
+  "Agent: …", in the app's own history.
+- **Context.** Each turn tells the agent the file, its counts and validation state, the selected
+  object, the weather file and the last run.
+
+The AI SDK loads only when the first message is sent, so it adds nothing to the app's initial
+download.
 
 ## Getting started
 
@@ -135,11 +165,13 @@ export NODE_EXTRA_CA_CERTS=/etc/ssl/cert.pem
 **Deployment.** `.github/workflows/pages.yml` typechecks, tests, builds and deploys to GitHub Pages
 on every push to `main`.
 
-**MCP.** `npm run mcp` serves 19 tools, including `open_idf`, `new_model`, `extrude_zone`,
-`add_opening`, `propose_matches`, `apply_matches`, `convert_simplified`, `validate`, `save_idf` and
-`undo`. Register it in an MCP client with the command `npx tsx scripts/mcp-server.ts`, run from the
-repository root. The tools address objects by name, return JSON, and share the UI's code and undo
-history. Nothing is written to disk until `save_idf` is called.
+**MCP.** `npm run mcp` serves 20 tools, including `open_idf`, `new_model`, `list_objects`,
+`extrude_zone`, `add_opening`, `propose_matches`, `apply_matches`, `convert_simplified`, `validate`,
+`save_idf` and `undo`. Register it in an MCP client with the command `npx tsx scripts/mcp-server.ts`,
+run from the repository root. The tools address objects by name (unnamed singletons such as
+`Timestep` by class), return JSON, and share the UI's code and undo history. They are defined once
+in `src/mcp/tools.ts` and also serve the in-app agent. Nothing is written to disk until `save_idf`
+is called.
 
 ## Code layout
 
@@ -150,8 +182,9 @@ history. Nothing is written to disk until `save_idf` is called.
 | `src/geometry/` | Coordinate resolution, validation, snapping, dragging, creation, matching, tier-3 conversion |
 | `src/render/` | three.js scene, viewer and story display |
 | `src/simulate/` | Simulation engine and Python REPL (`engine.ts`), its Web Worker (`worker.ts`) and the UI's client (`client.ts`) |
-| `src/ui/` | React shell: ribbon (`Ribbon.tsx`, `icons.tsx`), panels including the Python REPL, dialogs, examples |
-| `src/mcp/` | MCP server and session |
+| `src/ui/` | React shell: ribbon (`Ribbon.tsx`, `icons.tsx`), panels including the Python REPL and agent chat, dialogs, examples |
+| `src/mcp/` | Tool registry shared with the agent (`tools.ts`), browser-safe session, stdio MCP server |
+| `src/agent/` | In-app agent: providers and settings, tools with approval, system prompt, turn loop |
 | `test/` | Unit tests, corpus and round-trip gates, EnergyPlus gates, simulation tests |
 
 ## Documents

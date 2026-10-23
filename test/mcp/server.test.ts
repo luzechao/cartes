@@ -50,6 +50,7 @@ describe('MCP server', () => {
         'diff',
         'extrude_zone',
         'inspect',
+        'list_objects',
         'list_surfaces',
         'list_zones',
         'move_zone',

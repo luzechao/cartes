@@ -8,10 +8,10 @@
  * in step, proposals rather than silent rewrites. Objects are addressed by name, never by the
  * positional ids the Document uses internally, and every result is plain JSON.
  *
- * No MCP SDK dependency here; `server.ts` is the thin protocol layer on top.
+ * No MCP SDK dependency here and no disk access, so the same session runs in the browser:
+ * `server.ts` adds files and the protocol on top; the in-app agent `attach`es it to the open
+ * document instead.
  */
-import { readFileSync, writeFileSync } from 'node:fs'
-import { basename, extname } from 'node:path'
 import { emitIdf, parseIdf, type IdfDocument } from '../parser/index.js'
 import {
   applySurfaceDeletion,
@@ -54,6 +54,17 @@ interface Open {
   history: EditHistory
   /** The last proposals returned, so `apply_matches` can refer to them by id. */
   proposals: MatchProposal[]
+  /** False when attached: the history belongs to whoever attached it. */
+  ownsHistory: boolean
+}
+
+/** A document someone else has open — the app's — for the session to work on in place. */
+export interface AttachedDocument {
+  name: string
+  original: string
+  doc: IdfDocument
+  model: Model
+  history: EditHistory
 }
 
 function round(n: number, places = 3): number {
@@ -78,32 +89,47 @@ export class ModelSession {
 
   // --- opening and saving --------------------------------------------------
 
-  openFile(path: string): Summary {
-    if (extname(path).toLowerCase() !== '.idf') throw new SessionError('Only .idf files can be opened.')
-    return this.openText(readFileSync(path, 'utf8'), basename(path), path)
-  }
-
   openText(text: string, name = 'untitled.idf', path?: string): Summary {
-    this.open?.history.detach()
+    this.release()
     const doc = parseIdf(text)
-    this.open = { name, original: text, doc, model: buildModel(doc), history: new EditHistory(doc), proposals: [] }
+    this.open = { name, original: text, doc, model: buildModel(doc), history: new EditHistory(doc), proposals: [], ownsHistory: true }
     if (path !== undefined) this.open.path = path
     return this.summary()
+  }
+
+  /**
+   * Work on a document that is already open elsewhere, in place: edits land in its own undo
+   * history. Call again whenever the owner's model may have changed; proposals survive only
+   * while the document is the same one.
+   */
+  attach(d: AttachedDocument): void {
+    const proposals = this.open?.doc === d.doc ? this.open.proposals : []
+    if (this.open?.doc !== d.doc) this.release()
+    this.open = { name: d.name, original: d.original, doc: d.doc, model: d.model, history: d.history, proposals, ownsHistory: false }
+  }
+
+  /** The model as last rebuilt, for whoever attached the document to pick up edits. */
+  get model(): Model | undefined {
+    return this.open?.model
+  }
+
+  /** Where the model was opened from, if from a file. */
+  get path(): string | undefined {
+    return this.open?.path
+  }
+
+  /** Run `fn` as one undo step — so a tool call is undone as a whole. */
+  transact<T>(label: string, fn: () => T): T {
+    return this.need().history.transact(label, fn)
   }
 
   newModel(): Summary {
     return this.openText(newModelSource(LATEST_IDD_VERSION), 'untitled.idf')
   }
 
-  /** Write the file. Nothing is written anywhere unless this is called. */
-  save(path?: string): { path: string; bytes: number; changedObjects: number } {
-    const o = this.need()
-    const target = path ?? o.path
-    if (!target) throw new SessionError('This model has no file yet; give a path ending in .idf.')
-    if (extname(target).toLowerCase() !== '.idf') throw new SessionError('The path must end in .idf.')
-    const text = emitIdf(o.doc)
-    writeFileSync(target, text, 'utf8')
-    return { path: target, bytes: Buffer.byteLength(text), changedObjects: [...o.doc.objects.values()].filter((x) => x.dirty).length }
+  /** Objects changed since the file was opened. */
+  changedObjects(): number {
+    return [...this.need().doc.objects.values()].filter((x) => x.dirty).length
   }
 
   text(): string {
@@ -132,6 +158,31 @@ export class ModelSession {
       errors: v.errorCount,
       warnings: v.warningCount,
       canUndo: o.history.undoLabel ?? null,
+    }
+  }
+
+  /** Class counts, or — given a class — the names of its objects. */
+  listObjects(
+    className?: string,
+    limit = 200,
+  ): { classes: Array<{ class: string; count: number }> } | { class: string; count: number; names: string[]; truncated: boolean } {
+    const o = this.need()
+    if (className === undefined || className.trim() === '') {
+      return {
+        classes: [...o.doc.byClass]
+          .filter(([, ids]) => ids.length > 0)
+          .map(([, ids]) => ({ class: o.doc.objects.get(ids[0]!)!.className, count: ids.length }))
+          .sort((a, b) => a.class.localeCompare(b.class)),
+      }
+    }
+    const ids = o.doc.byClass.get(className.trim().toLowerCase()) ?? []
+    const objs = ids.map((id) => o.doc.objects.get(id)).filter((x) => x !== undefined)
+    if (objs.length === 0) throw new SessionError(`No ${className} objects; call list_objects without a class to see what the file has.`)
+    return {
+      class: objs[0]!.className,
+      count: objs.length,
+      names: objs.slice(0, limit).map((x) => x.fields[0]?.value ?? ''),
+      truncated: objs.length > limit,
     }
   }
 
@@ -372,6 +423,10 @@ export class ModelSession {
 
   // --- helpers ---------------------------------------------------------------
 
+  private release(): void {
+    if (this.open?.ownsHistory) this.open.history.detach()
+  }
+
   private need(): Open {
     if (!this.open) throw new SessionError('No model is open; call open_idf or new_model first.')
     return this.open
@@ -390,7 +445,16 @@ export class ModelSession {
     const o = this.need()
     const wanted = name.trim().toLowerCase()
     const matches = [...o.doc.objects.values()].filter((x) => x.fields[0]?.value.trim().toLowerCase() === wanted)
-    if (matches.length === 0) throw new SessionError(`No object named '${name}'.`)
+    if (matches.length === 0) {
+      // Unnamed singletons (Timestep, SimulationControl) are addressed by class.
+      const ofClass = (o.doc.byClass.get(wanted) ?? []).map((id) => o.doc.objects.get(id)).filter((x) => x !== undefined)
+      if (ofClass.length === 1) return ofClass[0]!
+      throw new SessionError(
+        ofClass.length > 1
+          ? `'${name}' is a class with ${ofClass.length} objects; address one by its name.`
+          : `No object named '${name}'.`,
+      )
+    }
     // Surfaces first: a zone and its floor can share a name in hand-written files.
     return matches.find((m) => o.model.surfaces.has(m.id)) ?? matches[0]!
   }

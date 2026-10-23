@@ -50,8 +50,11 @@ export interface Simulation {
   setEpw(file: File | undefined): void
   setPluginFiles(files: File[]): void
   setPackages(packages: string): void
-  run(idf: string, modelName: string, edited: boolean): Promise<void>
+  /** Resolves with the result, or the error that stopped the run; never rejects. */
+  run(idf: string, modelName: string, edited: boolean): Promise<RunAttempt>
 }
+
+export type RunAttempt = { result: SimulationResult; error?: undefined } | { result?: undefined; error: string }
 
 export function useSimulation(): Simulation {
   const [engine, setEngine] = useState<EngineStatus>({ state: 'idle' })
@@ -107,7 +110,7 @@ export function useSimulation(): Simulation {
   }, [loadEngine])
 
   const run = useCallback(
-    async (idf: string, modelName: string, edited: boolean) => {
+    async (idf: string, modelName: string, edited: boolean): Promise<RunAttempt> => {
       loadEngine()
       setRunning(true)
       setRunError(undefined)
@@ -124,9 +127,13 @@ export function useSimulation(): Simulation {
             .map((name) => name.trim())
             .filter(Boolean),
         })
-        setResult({ ...outcome, modelName, edited })
+        const result = { ...outcome, modelName, edited }
+        setResult(result)
+        return { result }
       } catch (error) {
-        setRunError(error instanceof Error ? error.message : String(error))
+        const message = error instanceof Error ? error.message : String(error)
+        setRunError(message)
+        return { error: message }
       } finally {
         setRunning(false)
       }

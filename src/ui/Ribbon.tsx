@@ -2,13 +2,19 @@
  * Ribbon toolbar: tabs of grouped, icon-labelled commands.
  * - Geometry: file and examples, history, panels, edit modes and snapping, create/modify, view.
  * - Simulate: weather, PythonPlugin modules and Pyodide packages; run; open results.
+ * - Agent: language-model provider and key, the conversation, and whether edits wait for approval.
  */
 import { useEffect, useRef, useState } from 'react'
 import type { SnapSettings } from '../geometry/index.js'
 import type { ColorBy } from '../render/index.js'
 import type { Example } from './examples.js'
 import type { Simulation } from './useSimulation.js'
+import type { Agent } from './useAgent.js'
+import { PROVIDERS, type ProviderId } from '../agent/settings.js'
 import {
+  AgentIcon,
+  BoltIcon,
+  ChatIcon,
   ChangesIcon,
   ChevronDownIcon,
   CloseIcon,
@@ -21,6 +27,7 @@ import {
   FitIcon,
   ImageIcon,
   InspectorIcon,
+  KeyIcon,
   LinkIcon,
   LogoIcon,
   MagnetIcon,
@@ -36,7 +43,9 @@ import {
   ReportIcon,
   RunIcon,
   SelectIcon,
+  ShieldIcon,
   SpinnerIcon,
+  StopIcon,
   StoriesIcon,
   TreeIcon,
   UndoIcon,
@@ -46,7 +55,7 @@ import {
   WindowIcon,
 } from './icons.js'
 
-export type RibbonTab = 'geometry' | 'simulate'
+export type RibbonTab = 'geometry' | 'simulate' | 'agent'
 
 export type EditMode = 'off' | 'vertex' | 'corner' | 'draw'
 
@@ -118,6 +127,10 @@ interface RibbonProps {
   onToggleConsole: () => void
   pythonVisible: boolean
   onTogglePython: () => void
+
+  agent: Agent
+  chatVisible: boolean
+  onToggleChat: () => void
 }
 
 export function Ribbon(props: RibbonProps): React.JSX.Element {
@@ -166,12 +179,27 @@ export function Ribbon(props: RibbonProps): React.JSX.Element {
           onSelect={selectTab}
           badge={simulation.running ? 'running' : undefined}
         />
+        <RibbonTabButton
+          id="agent"
+          label="Agent"
+          active={tab}
+          onSelect={selectTab}
+          badge={
+            Object.keys(props.agent.approvals).length > 0 ? 'approve' : props.agent.running ? 'working' : undefined
+          }
+        />
         <span className="spacer" />
         {props.meta && <span className="ribbon__meta">{props.meta}</span>}
       </div>
 
       <div className="ribbon__body" role="tabpanel">
-        {tab === 'geometry' ? <GeometryTab hasModel={props.hasModel} {...props.geometry} /> : <SimulateTab {...props} />}
+        {tab === 'geometry' ? (
+          <GeometryTab hasModel={props.hasModel} {...props.geometry} />
+        ) : tab === 'simulate' ? (
+          <SimulateTab {...props} />
+        ) : (
+          <AgentTab {...props} />
+        )}
       </div>
     </header>
   )
@@ -550,6 +578,120 @@ function SimulateTab(props: RibbonProps): React.JSX.Element {
   )
 }
 
+function AgentTab({ agent, chatVisible, onToggleChat }: RibbonProps): React.JSX.Element {
+  const { settings, updateSettings } = agent
+  const provider = PROVIDERS[settings.provider]
+  const setModel = (model: string): void => updateSettings({ models: { ...settings.models, [settings.provider]: model } })
+  const setKey = (key: string): void => updateSettings({ apiKeys: { ...settings.apiKeys, [settings.provider]: key } })
+  return (
+    <>
+      <RibbonGroup label="Provider">
+        <div className="ribbon__stack ribbon__stack--controls">
+          <label className="ribbon__select" title="Who runs the language model">
+            <AgentIcon size={16} />
+            <select value={settings.provider} onChange={(e) => updateSettings({ provider: e.target.value as ProviderId })}>
+              {(Object.keys(PROVIDERS) as ProviderId[]).map((id) => (
+                <option key={id} value={id}>
+                  {PROVIDERS[id].label}
+                </option>
+              ))}
+            </select>
+          </label>
+          <label className="ribbon__select" title="Model id; pick a suggestion or type any id the provider offers">
+            <ChatIcon size={16} />
+            <input
+              type="text"
+              list="agent-models"
+              placeholder={provider.needsBaseURL ? 'e.g. llama3.2' : 'Model id'}
+              value={settings.models[settings.provider]}
+              onChange={(e) => setModel(e.target.value)}
+              spellCheck={false}
+            />
+            <datalist id="agent-models">
+              {provider.suggestions.map((m) => (
+                <option key={m} value={m} />
+              ))}
+            </datalist>
+          </label>
+          {provider.needsBaseURL && (
+            <label className="ribbon__select" title="Base URL of an OpenAI-compatible API (it must allow requests from this page: CORS)">
+              <LinkIcon size={16} />
+              <input
+                type="url"
+                placeholder="http://localhost:11434/v1"
+                value={settings.baseURL}
+                onChange={(e) => updateSettings({ baseURL: e.target.value })}
+                spellCheck={false}
+              />
+            </label>
+          )}
+        </div>
+        <div className="ribbon__stack ribbon__stack--controls">
+          <label
+            className="ribbon__select"
+            title={`Your ${provider.label} API key. It is sent only to ${provider.label}${provider.needsBaseURL ? ' (the base URL)' : ''}, straight from this browser.`}
+          >
+            <KeyIcon size={16} />
+            <input
+              type="password"
+              placeholder={provider.keyRequired ? 'API key' : 'API key (optional)'}
+              value={settings.apiKeys[settings.provider]}
+              onChange={(e) => setKey(e.target.value)}
+              autoComplete="off"
+              spellCheck={false}
+            />
+          </label>
+          <label
+            className="ribbon__check"
+            title="Keep API keys in this browser's storage across visits. Otherwise they are forgotten when the tab closes."
+          >
+            <input type="checkbox" checked={settings.rememberKeys} onChange={(e) => updateSettings({ rememberKeys: e.target.checked })} />
+            Remember keys
+          </label>
+          <span className="ribbon__fine">Keys go only to the provider.</span>
+        </div>
+      </RibbonGroup>
+
+      <RibbonGroup label="Conversation">
+        <RibbonButton
+          icon={<ChatIcon />}
+          label="Chat"
+          onClick={onToggleChat}
+          active={chatVisible}
+          title="Show the conversation in the sidebar"
+        />
+        <RibbonButton icon={<NewIcon />} label="New chat" onClick={agent.newChat} title="Forget the conversation and start again" />
+        <RibbonButton
+          icon={<StopIcon />}
+          label="Stop"
+          onClick={agent.stop}
+          disabled={!agent.running}
+          title="Stop the agent; edits already made stay (undo them with Ctrl+Z)"
+        />
+      </RibbonGroup>
+
+      <RibbonGroup label="Edits">
+        <div className="ribbon__stack">
+          <SmallButton
+            icon={<ShieldIcon />}
+            label="Ask before edits"
+            onClick={() => updateSettings({ editMode: 'ask' })}
+            active={settings.editMode === 'ask'}
+            title="Every change to the model waits for you to approve it. Reading, Python and simulation do not."
+          />
+          <SmallButton
+            icon={<BoltIcon />}
+            label="Apply automatically"
+            onClick={() => updateSettings({ editMode: 'auto' })}
+            active={settings.editMode === 'auto'}
+            title="Changes apply as the agent makes them. Each is one undo step."
+          />
+        </div>
+      </RibbonGroup>
+    </>
+  )
+}
+
 function RibbonGroup({ label, children }: { label: string; children: React.ReactNode }): React.JSX.Element {
   return (
     <section className="ribbon__group" aria-label={label}>
@@ -601,9 +743,16 @@ function RibbonButton({ icon, label, onClick, title, disabled, active, highlight
 }
 
 /** Compact command: 16 px icon beside its label, stacked in a column of two or three. */
-function SmallButton({ icon, label, onClick, title, disabled }: Omit<RibbonButtonProps, 'highlighted' | 'primary' | 'active' | 'badge'>): React.JSX.Element {
+function SmallButton({ icon, label, onClick, title, disabled, active }: Omit<RibbonButtonProps, 'highlighted' | 'primary' | 'badge'>): React.JSX.Element {
   return (
-    <button type="button" className="ribbon__small" onClick={onClick} disabled={disabled} title={title}>
+    <button
+      type="button"
+      className={`ribbon__small${active ? ' ribbon__small--active' : ''}`}
+      onClick={onClick}
+      disabled={disabled}
+      title={title}
+      aria-pressed={active}
+    >
       <span className="ribbon__small-icon">{icon}</span>
       {label}
     </button>

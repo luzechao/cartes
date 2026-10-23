@@ -363,3 +363,59 @@ export function PythonIcon(props: IconProps): React.JSX.Element {
     </Svg>
   )
 }
+
+/** Four-point sparkle with a small companion: the assistant. */
+export function AgentIcon(props: IconProps): React.JSX.Element {
+  return (
+    <Svg {...props}>
+      <path d="M10 3.5c.6 3.8 2.2 5.4 6 6-3.8.6-5.4 2.2-6 6-.6-3.8-2.2-5.4-6-6 3.8-.6 5.4-2.2 6-6z" />
+      <path d="M17.5 14.5c.3 1.9 1.1 2.7 3 3-1.9.3-2.7 1.1-3 3-.3-1.9-1.1-2.7-3-3 1.9-.3 2.7-1.1 3-3z" fill="currentColor" fillOpacity={0.25} />
+    </Svg>
+  )
+}
+
+export function ChatIcon(props: IconProps): React.JSX.Element {
+  return (
+    <Svg {...props}>
+      <path d="M4 6.5A2.5 2.5 0 0 1 6.5 4h11A2.5 2.5 0 0 1 20 6.5v7a2.5 2.5 0 0 1-2.5 2.5H11l-4.5 3.5V16A2.5 2.5 0 0 1 4 13.5z" />
+      <path d="M8 8.5h8M8 11.5h5" />
+    </Svg>
+  )
+}
+
+export function StopIcon(props: IconProps): React.JSX.Element {
+  return (
+    <Svg {...props}>
+      <circle cx="12" cy="12" r="8.5" />
+      <rect x="9" y="9" width="6" height="6" rx="1" fill="currentColor" fillOpacity={0.25} />
+    </Svg>
+  )
+}
+
+export function KeyIcon(props: IconProps): React.JSX.Element {
+  return (
+    <Svg {...props}>
+      <circle cx="8" cy="15" r="4" />
+      <path d="m10.8 12.2 8.7-8.7M16.5 6.5l2.5 2.5M14 9l2 2" />
+    </Svg>
+  )
+}
+
+/** Shield with a check: edits wait for approval. */
+export function ShieldIcon(props: IconProps): React.JSX.Element {
+  return (
+    <Svg {...props}>
+      <path d="M12 3.5 5 6.2v5.3c0 4.3 2.9 7.6 7 9 4.1-1.4 7-4.7 7-9V6.2z" />
+      <path d="m9 12 2.2 2.2L15.5 10" />
+    </Svg>
+  )
+}
+
+/** Lightning bolt: edits apply at once. */
+export function BoltIcon(props: IconProps): React.JSX.Element {
+  return (
+    <Svg {...props}>
+      <path d="M13 3 5.5 13.5H12L11 21l7.5-10.5H12z" />
+    </Svg>
+  )
+}

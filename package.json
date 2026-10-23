@@ -21,7 +21,11 @@
     "prebuild": "sim-engine-wasm-assets public/sim-engine"
   },
   "dependencies": {
+    "@ai-sdk/anthropic": "^4.0.87",
+    "@ai-sdk/openai": "^4.0.101",
+    "@ai-sdk/openai-compatible": "^3.0.77",
     "@luzechao/sim-engine-wasm": "https://github.com/luzechao/browser-energy-simulation/releases/download/sim-engine-wasm-v26.1.0/luzechao-sim-engine-wasm-26.1.0.tgz",
+    "ai": "^7.0.150",
     "dexie": "^4.0.0",
     "earcut": "^3.0.0",
     "polygon-clipping": "^0.15.7",

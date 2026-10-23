@@ -67,6 +67,9 @@ import { MatchPanel } from './MatchPanel.js'
 import { Ribbon, type RibbonTab } from './Ribbon.js'
 import { PythonPanel } from './PythonPanel.js'
 import { usePython } from './usePython.js'
+import { AgentPanel } from './AgentPanel.js'
+import { useAgent, type AgentBridge } from './useAgent.js'
+import { sharedSimulationClient } from '../simulate/index.js'
 import { SimulatePanel } from './SimulatePanel.js'
 import { useSimulation } from './useSimulation.js'
 import { EXAMPLES, fetchExample, type Example } from './examples.js'
@@ -154,10 +157,10 @@ interface BuildStats {
   skipped: number
 }
 
-/** Sidebar tabs. Each ribbon tab has its own: Geometry shows the first three, Simulate the last two. */
+/** Sidebar tabs. Each ribbon tab has its own: Geometry three, Simulate two, Agent the chat. */
 type GeometryPanelTab = 'inspector' | 'validation' | 'matching'
 type SimulatePanelTab = 'simulate' | 'python'
-type RightPanelTab = GeometryPanelTab | SimulatePanelTab
+type RightPanelTab = GeometryPanelTab | SimulatePanelTab | 'chat'
 type ValidationFilter = 'all' | 'error' | 'warning'
 
 export function App(): React.JSX.Element {
@@ -177,10 +180,11 @@ export function App(): React.JSX.Element {
   // The sidebar remembers a tab per ribbon tab and shows the one belonging to the active ribbon tab.
   const [geometryPanel, setGeometryPanel] = useState<GeometryPanelTab>('inspector')
   const [simulatePanel, setSimulatePanel] = useState<SimulatePanelTab>('simulate')
-  const rightTab: RightPanelTab = ribbonTab === 'geometry' ? geometryPanel : simulatePanel
+  const rightTab: RightPanelTab = ribbonTab === 'geometry' ? geometryPanel : ribbonTab === 'simulate' ? simulatePanel : 'chat'
   /** Show a sidebar tab, switching the ribbon to the tab it belongs to. */
   const setRightTab = useCallback((tab: RightPanelTab) => {
-    if (tab === 'simulate' || tab === 'python') {
+    if (tab === 'chat') setRibbonTab('agent')
+    else if (tab === 'simulate' || tab === 'python') {
       setSimulatePanel(tab)
       setRibbonTab('simulate')
     } else {
@@ -202,6 +206,9 @@ export function App(): React.JSX.Element {
   const { ask, element: dialog } = useDialog()
   const simulation = useSimulation()
   const python = usePython(simulation)
+  // Refreshed every render below, so the agent's tools always reach the current document.
+  const agentBridge = useRef<AgentBridge>(null!)
+  const agent = useAgent(agentBridge)
 
   // Pointer and keyboard handlers outlive a render; they read the current state through these.
   const loadedRef = useRef<LoadedFile | undefined>(undefined)
@@ -1047,6 +1054,67 @@ export function App(): React.JSX.Element {
   const dirtyObjects = loaded ? getDirtyObjects(loaded.doc) : []
   const currentText = useMemo(() => (loaded ? emitIdf(loaded.doc) : ''), [loaded])
 
+  agentBridge.current = {
+    document: () => {
+      const current = loadedRef.current
+      return (
+        current && { name: current.name, original: current.originalSource, doc: current.doc, model: current.model, history: current.history }
+      )
+    },
+    afterEdit: () => commit({ rebuild: true }),
+    context: () => {
+      const current = loadedRef.current
+      if (!current) return {}
+      const selected = selectedRef.current ? current.doc.objects.get(selectedRef.current) : undefined
+      const result = simulation.result
+      return {
+        modelName: current.name,
+        version: current.model.version,
+        zones: current.model.zones.size,
+        surfaces: current.model.surfaces.size,
+        errors: current.validation.errorCount,
+        warnings: current.validation.warningCount,
+        changedObjects: getDirtyObjects(current.doc).length,
+        selection: selected ? `${selected.className} '${selected.fields[0]?.value ?? ''}'` : undefined,
+        weather: simulation.epw?.name,
+        pluginFiles: simulation.pluginFiles.map((f) => f.name),
+        lastRun: result ? `${result.modelName}: ${result.summary?.raw ?? `exit code ${result.exitCode}`}` : undefined,
+      }
+    },
+    runPython: async (code) => {
+      simulation.loadEngine()
+      let stdout = ''
+      let stderr = ''
+      const outcome = await sharedSimulationClient().exec(code, (stream, line) => {
+        if (stream === 'err') stderr += `${line}\n`
+        else stdout += `${line}\n`
+      })
+      return { ok: outcome.ok, value: outcome.value, error: outcome.error, stdout, stderr }
+    },
+    runSimulation: async () => {
+      const current = loadedRef.current
+      if (!current) return { error: 'No model is open.' }
+      if (simulation.running) return { error: 'A simulation is already running; wait for it to finish.' }
+      const attempt = await simulation.run(emitIdf(current.doc), current.name, getDirtyObjects(current.doc).length > 0)
+      if (!attempt.result) return { error: attempt.error }
+      const r = attempt.result
+      return {
+        exitCode: r.exitCode,
+        completed: r.summary?.success ?? false,
+        summary: r.summary?.raw ?? 'EnergyPlus stopped before writing eplusout.end.',
+        seconds: Math.round(r.seconds * 10) / 10,
+        weather: simulation.epw?.name ?? 'none (design days only)',
+        warnings: r.messages.filter((m) => m.severity === 'warning').length,
+        severeAndFatal: r.messages
+          .filter((m) => m.severity !== 'warning')
+          .slice(0, 20)
+          .map((m) => ({ severity: m.severity, message: m.message, details: m.details.slice(0, 6) })),
+        outputs: Object.keys(r.outputs).sort(),
+        note: 'The output files are in the directory `last_run`; read them with run_python.',
+      }
+    },
+  }
+
   const filteredIssues = (validation?.issues ?? []).filter((issue) => {
     if (validationFilter === 'error') return issue.severity === 'error'
     if (validationFilter === 'warning') return issue.severity === 'warning'
@@ -1125,7 +1193,10 @@ export function App(): React.JSX.Element {
     >
       <Ribbon
         tab={ribbonTab}
-        onTabChange={setRibbonTab}
+        onTabChange={(next) => {
+          setRibbonTab(next)
+          if (next === 'agent') setShowRightPanel(true)
+        }}
         meta={
           loaded
             ? `${loaded.name} · EnergyPlus ${loaded.model.version} · ${loaded.model.rules.coordinateSystem} coordinates · ${loaded.model.zones.size} zones · ${stats?.drawn ?? 0} surfaces · ${Math.round(loaded.ms)} ms`
@@ -1195,6 +1266,9 @@ export function App(): React.JSX.Element {
         onToggleConsole={() => toggleRightTab('simulate')}
         pythonVisible={showRightPanel && rightTab === 'python'}
         onTogglePython={() => toggleRightTab('python')}
+        agent={agent}
+        chatVisible={showRightPanel && rightTab === 'chat'}
+        onToggleChat={() => toggleRightTab('chat')}
       />
 
       <div className="workspace">
@@ -1278,11 +1352,13 @@ export function App(): React.JSX.Element {
           )}
         </div>
 
-        {/* Right Drawer: Inspector, Validation and Matching under Geometry; Simulate and Python under Simulate */}
-        {showRightPanel && (loaded || rightTab === 'python') && (
+        {/* Right Drawer: Inspector, Validation and Matching under Geometry; Simulate and Python under Simulate; Chat under Agent */}
+        {showRightPanel && (loaded || rightTab === 'python' || rightTab === 'chat') && (
           <aside className="right-panel">
             <div className="right-panel__tabs">
-              {(ribbonTab === 'geometry'
+              {(ribbonTab === 'agent'
+                ? ([['chat', Object.keys(agent.approvals).length ? `Chat (${Object.keys(agent.approvals).length} to approve)` : 'Chat']] as const)
+                : ribbonTab === 'geometry'
                 ? ([
                     ['inspector', 'Inspector'],
                     ['validation', `Validation (${validation?.issues.length ?? 0})`],
@@ -1307,7 +1383,9 @@ export function App(): React.JSX.Element {
             </div>
 
             <div className="right-panel__body">
-              {rightTab === 'python' ? (
+              {rightTab === 'chat' ? (
+                <AgentPanel agent={agent} hasModel={loaded !== undefined} />
+              ) : rightTab === 'python' ? (
                 <PythonPanel simulation={simulation} repl={python} />
               ) : !loaded ? null : rightTab === 'simulate' ? (
                 <SimulatePanel simulation={simulation} idfVersion={loaded.model.versionResolution.declared} />
