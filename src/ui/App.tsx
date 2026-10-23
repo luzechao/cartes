@@ -8,7 +8,7 @@
  * - Live Unified Diff & Raw IDF Viewer
  * - On-demand 3D rendering stage with interactive selection
  */
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from 'react'
 import { parseIdf, emitIdf, type IdfDocument } from '../parser/index.js'
 import {
   applySurfaceDeletion,
@@ -61,7 +61,8 @@ import {
 } from '../geometry/index.js'
 import { buildScene, computeStories, Viewer, type ColorBy, type HoverInfo, type StoryDisplay } from '../render/index.js'
 import { ObjectTree } from './ObjectTree.js'
-import { Inspector } from './Inspector.js'
+import { Inspector, type FullSchema } from './Inspector.js'
+import { loadProse, loadSchema, schemaIssues, type SchemaIssue } from '../schema/index.js'
 import { DiffPanel } from './DiffPanel.js'
 import { MatchPanel } from './MatchPanel.js'
 import { Ribbon, type RibbonTab } from './Ribbon.js'
@@ -1054,6 +1055,42 @@ export function App(): React.JSX.Element {
   const dirtyObjects = loaded ? getDirtyObjects(loaded.doc) : []
   const currentText = useMemo(() => (loaded ? emitIdf(loaded.doc) : ''), [loaded])
 
+  // The full EnergyPlus schema for this file's version: every class's fields in the Inspector,
+  // and field checks under Validation. Fetched once per version, after the file is showing.
+  const schemaVersion = model ? (model.versionResolution.declared ?? model.version) : undefined
+  const [fullSchema, setFullSchema] = useState<(FullSchema & { version: string }) | undefined>(undefined)
+  useEffect(() => {
+    if (!schemaVersion || fullSchema?.version === schemaVersion) return
+    let live = true
+    void Promise.all([loadSchema(schemaVersion), loadProse().catch(() => undefined)])
+      .then(([schema, prose]) => {
+        if (live && schema) setFullSchema({ version: schemaVersion, schema, prose })
+      })
+      .catch(() => {})
+    return () => {
+      live = false
+    }
+  }, [schemaVersion, fullSchema?.version])
+  const full = fullSchema?.version === schemaVersion ? fullSchema : undefined
+  const checkedText = useDeferredValue(currentText)
+  const fieldIssues = useMemo<SchemaIssue[]>(() => (full && checkedText ? schemaIssues(checkedText, full.schema) : []), [full, checkedText])
+  const filteredFieldIssues = fieldIssues.filter((issue) => validationFilter === 'all' || issue.severity === validationFilter)
+  const fieldErrorCount = fieldIssues.filter((i) => i.severity === 'error').length
+  const fieldWarningCount = fieldIssues.filter((i) => i.severity === 'warning').length
+
+  const selectFieldIssue = (issue: SchemaIssue): void => {
+    const current = loadedRef.current
+    if (!current) return
+    const ids = current.doc.byClass.get(issue.className.toLowerCase()) ?? []
+    const wanted = issue.objectName.trim().toLowerCase()
+    const id = wanted
+      ? ids.find((x) => current.doc.objects.get(x)?.fields[0]?.value.trim().toLowerCase() === wanted)
+      : ids.length === 1
+        ? ids[0]
+        : undefined
+    if (id) selectObject(id)
+  }
+
   agentBridge.current = {
     document: () => {
       const current = loadedRef.current
@@ -1221,7 +1258,7 @@ export function App(): React.JSX.Element {
           inspectorVisible: showRightPanel && rightTab === 'inspector',
           onToggleInspector: () => toggleRightTab('inspector'),
           validationVisible: showRightPanel && rightTab === 'validation',
-          validationCount: validation?.issues.length ?? 0,
+          validationCount: (validation?.issues.length ?? 0) + fieldIssues.length,
           onToggleValidation: () => toggleRightTab('validation'),
           matchingVisible: showRightPanel && rightTab === 'matching',
           matchingCount: matchReport?.proposals.length ?? 0,
@@ -1361,7 +1398,7 @@ export function App(): React.JSX.Element {
                 : ribbonTab === 'geometry'
                 ? ([
                     ['inspector', 'Inspector'],
-                    ['validation', `Validation (${validation?.issues.length ?? 0})`],
+                    ['validation', `Validation (${(validation?.issues.length ?? 0) + fieldIssues.length})`],
                     ['matching', `Matching (${matchReport?.proposals.length ?? 0})`],
                   ] as const)
                 : loaded
@@ -1406,6 +1443,7 @@ export function App(): React.JSX.Element {
                   doc={loaded.doc}
                   model={loaded.model}
                   selectedId={selectedId}
+                  full={full}
                   onFieldChange={handleFieldChange}
                   onRevertObject={handleRevertObject}
                 />
@@ -1417,26 +1455,26 @@ export function App(): React.JSX.Element {
                       className={`validation-panel__tab${validationFilter === 'all' ? ' validation-panel__tab--active' : ''}`}
                       onClick={() => setValidationFilter('all')}
                     >
-                      All ({validation?.issues.length ?? 0})
+                      All ({(validation?.issues.length ?? 0) + fieldIssues.length})
                     </button>
                     <button
                       type="button"
                       className={`validation-panel__tab${validationFilter === 'error' ? ' validation-panel__tab--active' : ''}`}
                       onClick={() => setValidationFilter('error')}
                     >
-                      Errors ({errorCount})
+                      Errors ({errorCount + fieldErrorCount})
                     </button>
                     <button
                       type="button"
                       className={`validation-panel__tab${validationFilter === 'warning' ? ' validation-panel__tab--active' : ''}`}
                       onClick={() => setValidationFilter('warning')}
                     >
-                      Warnings ({warningCount})
+                      Warnings ({warningCount + fieldWarningCount})
                     </button>
                   </div>
 
                   <div className="validation-panel__list">
-                    {filteredIssues.length === 0 ? (
+                    {filteredIssues.length === 0 && filteredFieldIssues.length > 0 ? null : filteredIssues.length === 0 ? (
                       <div className="validation-panel__empty">
                         No {validationFilter === 'all' ? '' : validationFilter} issues found.
                       </div>
@@ -1468,6 +1506,33 @@ export function App(): React.JSX.Element {
                           </div>
                         )
                       })
+                    )}
+                    {filteredFieldIssues.length > 0 && (
+                      <>
+                        <div className="validation-panel__section" title="Every class checked against the EnergyPlus schema (idfkit)">
+                          Field checks ({filteredFieldIssues.length})
+                        </div>
+                        {filteredFieldIssues.slice(0, 500).map((issue, idx) => (
+                          <div
+                            key={`field:${issue.className}:${issue.objectName}:${issue.field ?? ''}:${issue.code}:${idx}`}
+                            className={`issue-card issue-card--${issue.severity === 'error' ? 'error' : 'warning'}`}
+                            onClick={() => selectFieldIssue(issue)}
+                          >
+                            <div className="issue-card__top">
+                              <span className={`issue-card__badge issue-card__badge--${issue.severity === 'error' ? 'error' : 'warning'}`}>
+                                {issue.severity}
+                              </span>
+                              <span className="issue-card__code">{issue.code}</span>
+                            </div>
+                            <div className="issue-card__name">
+                              {issue.className}
+                              {issue.objectName ? ` '${issue.objectName}'` : ''}
+                              {issue.field ? ` · ${issue.field}` : ''}
+                            </div>
+                            <p className="issue-card__msg">{issue.message}</p>
+                          </div>
+                        ))}
+                      </>
                     )}
                   </div>
                 </div>

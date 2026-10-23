@@ -17,13 +17,15 @@
     "preprocess-idd": "tsx scripts/preprocess-idd.ts",
     "setup": "npm run fetch-idd && npm run preprocess-idd && npm run fetch-fixtures",
     "mcp": "tsx scripts/mcp-server.ts",
-    "predev": "sim-engine-wasm-assets public/sim-engine",
-    "prebuild": "sim-engine-wasm-assets public/sim-engine"
+    "predev": "sim-engine-wasm-assets public/sim-engine && node scripts/copy-schemas.mjs",
+    "prebuild": "sim-engine-wasm-assets public/sim-engine && node scripts/copy-schemas.mjs"
   },
   "dependencies": {
     "@ai-sdk/anthropic": "^4.0.87",
     "@ai-sdk/openai": "^4.0.101",
     "@ai-sdk/openai-compatible": "^3.0.77",
+    "@idfkit/core": "^0.4.0",
+    "@idfkit/schemas": "^0.4.0",
     "@luzechao/sim-engine-wasm": "https://github.com/luzechao/browser-energy-simulation/releases/download/sim-engine-wasm-v26.1.0/luzechao-sim-engine-wasm-26.1.0.tgz",
     "ai": "^7.0.150",
     "dexie": "^4.0.0",

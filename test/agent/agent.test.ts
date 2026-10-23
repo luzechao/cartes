@@ -8,6 +8,10 @@ import { createAgentTools, limitOutput, needsApproval, type AgentHost } from '..
 import { runAgentTurn, type AgentEvent } from '../../src/agent/loop.js'
 import { buildInstructions } from '../../src/agent/prompt.js'
 import { defaultSettings, settingsProblem } from '../../src/agent/settings.js'
+import { localBundle } from '@idfkit/schemas/node'
+import { setSchemaBundle } from '../../src/schema/index.js'
+
+setSchemaBundle(localBundle())
 
 /** A stand-in for App: one open document, rebuilt after every edit as App's commit does. */
 function fakeApp(opts: { editMode?: 'ask' | 'auto'; approve?: boolean } = {}) {

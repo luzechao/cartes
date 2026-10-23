@@ -15,8 +15,12 @@ import { readFileSync, writeFileSync } from 'node:fs'
 import { basename, extname } from 'node:path'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { z } from 'zod'
+import { localBundle } from '@idfkit/schemas/node'
 import { ModelSession, SessionError } from './session.js'
 import { sessionTools } from './tools.js'
+import { setSchemaBundle } from '../schema/index.js'
+
+setSchemaBundle(localBundle())
 
 type ToolResult = { content: Array<{ type: 'text'; text: string }>; isError?: boolean }
 
@@ -44,13 +48,12 @@ export function createCartesServer(session = new ModelSession()): McpServer {
   )
 
   for (const tool of sessionTools) {
-    if (tool.input) {
-      server.registerTool(tool.name, { description: tool.description, inputSchema: tool.input }, (args) =>
-        run(() => tool.run(session, args)),
-      )
-    } else {
-      server.registerTool(tool.name, { description: tool.description }, () => run(() => tool.run(session, {})))
+    const call = async (args: Record<string, unknown>): Promise<ToolResult> => {
+      await session.prepare({ prose: tool.prose === true })
+      return run(() => tool.run(session, args))
     }
+    if (tool.input) server.registerTool(tool.name, { description: tool.description, inputSchema: tool.input }, call)
+    else server.registerTool(tool.name, { description: tool.description }, () => call({}))
   }
 
   server.registerTool(

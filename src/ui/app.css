@@ -2221,3 +2221,42 @@ button:disabled {
   border-color: #3f7d4c;
   color: #fff;
 }
+
+/* Inspector: full-schema additions */
+.inspector-panel__docs {
+  margin-left: 8px;
+  font-size: 11px;
+  color: #9cc6f0;
+  text-decoration: none;
+}
+
+.inspector-panel__docs:hover {
+  text-decoration: underline;
+}
+
+.field-row__input--invalid {
+  border-color: #c85050;
+}
+
+.field-row__problem {
+  margin-top: 3px;
+  font-size: 10.5px;
+  color: #ff9a9a;
+}
+
+.validation-panel__section {
+  margin: 10px 0 6px;
+  padding-top: 8px;
+  border-top: 1px solid #31343c;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: #9da0a8;
+}
+
+.validation-panel__section:first-child {
+  margin-top: 0;
+  padding-top: 0;
+  border-top: none;
+}

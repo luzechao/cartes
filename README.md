@@ -17,7 +17,10 @@ Open an existing `.idf`, see its geometry in 3D, edit it, simulate it, and write
   construction, pull stories apart or show one at a time, share a view as a link, save it as an
   image.
 - **Validation as EnergyPlus does it.** The enclosure and upside-down checks agree with
-  EnergyPlus on every case measured.
+  EnergyPlus on every case measured. Every other class is checked field by field against the
+  full EnergyPlus schema: choices, numbers, bounds, required fields and dangling references.
+- **Every class in the Inspector.** Field names, units, choices, defaults, notes, value checks and
+  name suggestions for reference fields, for all ~850 classes, with a link to the I/O Reference.
 - **Geometry editing.** Drag vertices and building corners with vertex, edge and grid snapping.
   Add and delete vertices and move zones. Interzone twins stay in step, and everything can be
   undone.
@@ -113,9 +116,13 @@ field-level writes, twins kept in step, proposals before matching.
   from the browser to the provider with your own key; there is no cartes server. Keys stay in
   `sessionStorage` and are forgotten when the tab closes, unless **Remember keys** is checked. A
   local server must allow cross-origin requests from the page (for Ollama, set `OLLAMA_ORIGINS`).
-- **Tools.** `summary`, `list_objects`, `list_zones`, `list_surfaces`, `inspect`, `validate`,
-  `diff`, `propose_matches`; the edits `set_field`, `extrude_zone`, `add_opening`, `move_zone`,
-  `delete_surface`, `apply_matches`, `convert_simplified`, `undo` and `redo`; `run_python` in the
+- **Tools.** Reading: `summary`, `list_objects`, `list_zones`, `list_surfaces`, `inspect`,
+  `validate`, `diff`, `propose_matches`, and `find_classes` and `describe_class` over every
+  EnergyPlus class. Geometry edits: `extrude_zone`, `add_opening`, `move_zone`, `delete_surface`,
+  `apply_matches`, `convert_simplified`. Edits to any class: `set_field`, `update_object`,
+  `add_object`, `rename_object` (references follow), `duplicate_object` and `remove_object`
+  (refused while referenced unless forced). Values the schema forbids are refused with the
+  reason. `undo` and `redo`; `run_python` in the
   REPL's Pyodide interpreter, with `last_run` and `api` (for calculation and reading results;
   Python cannot change the model); and `run_simulation`, with the Simulate tab's weather and
   plugins. Opening, saving and replacing the file stay with the user.
@@ -128,6 +135,18 @@ field-level writes, twins kept in step, proposals before matching.
 
 The AI SDK loads only when the first message is sent, so it adds nothing to the app's initial
 download.
+
+## Full schema
+
+The model layer's own IDD table covers the geometry classes across 27 releases. Everything else
+comes from [`@idfkit/schemas`](https://github.com/idfkit/idfkit-js) (every class, 8.9 to 26.2,
+~1 MB gzipped) with validation and descriptions from `@idfkit/core`. cartes still owns the
+document and every write; idfkit only reads. The bundle is copied to `public/schemas/` by
+`predev`/`prebuild` and fetched when a file is opened.
+
+Field checks follow idfkit's codes (E002–E010) with one exception: `Autosize` and `Autocalculate`
+are accepted for each other. EnergyPlus does the same, and 836 such values occur in 164 of its own
+example files.
 
 ## Getting started
 
@@ -165,9 +184,9 @@ export NODE_EXTRA_CA_CERTS=/etc/ssl/cert.pem
 **Deployment.** `.github/workflows/pages.yml` typechecks, tests, builds and deploys to GitHub Pages
 on every push to `main`.
 
-**MCP.** `npm run mcp` serves 20 tools, including `open_idf`, `new_model`, `list_objects`,
-`extrude_zone`, `add_opening`, `propose_matches`, `apply_matches`, `convert_simplified`, `validate`,
-`save_idf` and `undo`. Register it in an MCP client with the command `npx tsx scripts/mcp-server.ts`,
+**MCP.** `npm run mcp` serves 27 tools, including `open_idf`, `new_model`, `find_classes`,
+`describe_class`, `add_object`, `rename_object`, `extrude_zone`, `add_opening`, `apply_matches`,
+`validate`, `save_idf` and `undo`. Register it in an MCP client with the command `npx tsx scripts/mcp-server.ts`,
 run from the repository root. The tools address objects by name (unnamed singletons such as
 `Timestep` by class), return JSON, and share the UI's code and undo history. They are defined once
 in `src/mcp/tools.ts` and also serve the in-app agent. Nothing is written to disk until `save_idf`
@@ -184,6 +203,7 @@ is called.
 | `src/simulate/` | Simulation engine and Python REPL (`engine.ts`), its Web Worker (`worker.ts`) and the UI's client (`client.ts`) |
 | `src/ui/` | React shell: ribbon (`Ribbon.tsx`, `icons.tsx`), panels including the Python REPL and agent chat, dialogs, examples |
 | `src/mcp/` | Tool registry shared with the agent (`tools.ts`), browser-safe session, stdio MCP server |
+| `src/schema/` | Full EnergyPlus schema (idfkit): loading, field layout, value checks, validation, class descriptions |
 | `src/agent/` | In-app agent: providers and settings, tools with approval, system prompt, turn loop |
 | `test/` | Unit tests, corpus and round-trip gates, EnergyPlus gates, simulation tests |
 

@@ -80,6 +80,10 @@ export function createAgentTools(host: AgentHost, session = new ModelSession()):
           }
         }
         // Attach now, not before approval: the user may have edited while deciding.
+        if (!host.document()) return NO_MODEL
+        session.attach(host.document()!)
+        await session.prepare({ prose: t.prose === true })
+        // Again, since loading the schema may have yielded to the app.
         const doc = host.document()
         if (!doc) return NO_MODEL
         session.attach(doc)

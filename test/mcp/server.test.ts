@@ -43,12 +43,16 @@ describe('MCP server', () => {
     const { tools } = await client.listTools()
     expect(tools.map((t) => t.name).sort()).toEqual(
       [
+        'add_object',
         'add_opening',
         'apply_matches',
         'convert_simplified',
         'delete_surface',
+        'describe_class',
         'diff',
+        'duplicate_object',
         'extrude_zone',
+        'find_classes',
         'inspect',
         'list_objects',
         'list_surfaces',
@@ -58,10 +62,13 @@ describe('MCP server', () => {
         'open_idf',
         'propose_matches',
         'redo',
+        'remove_object',
+        'rename_object',
         'save_idf',
         'set_field',
         'summary',
         'undo',
+        'update_object',
         'validate',
       ].sort(),
     )

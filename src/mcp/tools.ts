@@ -4,7 +4,9 @@
  * input shape, a description written for a language model, and a kind that says how careful a
  * host should be before running it.
  *
- * Nothing here touches the disk or the network, so the registry bundles for the browser.
+ * Nothing here touches the disk or the network, so the registry bundles for the browser. Hosts
+ * `await session.prepare({ prose })` before `run`, which loads the full schema the class-level
+ * tools need; `run` itself is synchronous, so a tool call is one undo step.
  */
 import { z } from 'zod'
 import type { ModelSession } from './session.js'
@@ -24,6 +26,8 @@ export interface SessionTool<S extends z.ZodRawShape = z.ZodRawShape> {
   input?: S
   /** Served by the MCP server only — not offered to the in-app agent. */
   mcpOnly?: boolean
+  /** Needs the schema's field notes and class memos loaded (`prepare({ prose: true })`). */
+  prose?: boolean
   run: (session: ModelSession, args: z.objectOutputType<S, z.ZodTypeAny>) => unknown
 }
 
@@ -32,6 +36,8 @@ function define<S extends z.ZodRawShape>(tool: SessionTool<S>): SessionTool {
 }
 
 const point = z.tuple([z.number(), z.number()])
+const value = z.union([z.string(), z.number()])
+const cls = z.string().optional().describe('Class of the object, when its name is shared with an object of another class.')
 
 export const sessionTools: SessionTool[] = [
   define({
@@ -62,6 +68,26 @@ export const sessionTools: SessionTool[] = [
     run: (s, a) => s.listObjects(a.class, a.limit),
   }),
   define({
+    name: 'find_classes',
+    kind: 'read',
+    prose: true,
+    description:
+      'Search every EnergyPlus class — not only those in the file — by words in its name or IDD group, e.g. ' +
+      '"infiltration", "material glazing", "schedule". Returns names, groups and one-line summaries.',
+    input: { query: z.string(), limit: z.number().int().positive().optional() },
+    run: (s, a) => s.findClasses(a.query, a.limit),
+  }),
+  define({
+    name: 'describe_class',
+    kind: 'read',
+    prose: true,
+    description:
+      'Every field of a class, in order: index, epJSON name, type, units, default, choices, bounds, required, the ' +
+      'reference lists it must name an object from, and a note; plus any repeating group. Read this before add_object.',
+    input: { class: z.string() },
+    run: (s, a) => s.describeClass(a.class),
+  }),
+  define({
     name: 'list_zones',
     kind: 'read',
     description: 'Every zone, with its floor area and origin.',
@@ -78,24 +104,76 @@ export const sessionTools: SessionTool[] = [
   define({
     name: 'inspect',
     kind: 'read',
-    description: 'Every field of one object of any class, by IDD field name.',
-    input: { name: z.string() },
-    run: (s, a) => s.inspect(a.name),
+    description: 'Every field of one object of any class: index, name, value and units.',
+    input: { name: z.string(), class: cls },
+    run: (s, a) => s.inspect(a.name, a.class),
   }),
   define({
     name: 'validate',
     kind: 'read',
-    description: 'Geometry and reference checks, as EnergyPlus would raise them.',
+    description:
+      'Geometry and reference checks as EnergyPlus would raise them, then field checks over every class: choices, ' +
+      'numbers, bounds, required fields, dangling references (E009) and duplicate singletons.',
     run: (s) => s.validate(),
   }),
   define({
     name: 'set_field',
     kind: 'edit',
     description:
-      'Set one field of any object, by IDD field name (e.g. "Construction Name") or index. Objects are addressed by ' +
-      'name; for unnamed objects such as Timestep, use the class name.',
-    input: { object: z.string(), field: z.union([z.string(), z.number().int()]), value: z.string() },
-    run: (s, a) => s.setField(a.object, a.field, a.value),
+      'Set one field of any object, by name ("Construction Name" or construction_name) or index. Values the schema ' +
+      'forbids are refused with the reason. Unnamed singletons such as Timestep are addressed by class. Use ' +
+      'rename_object, not this, to change a name.',
+    input: { object: z.string(), field: z.union([z.string(), z.number().int()]), value, class: cls },
+    run: (s, a) => s.setField(a.object, a.field, a.value, a.class),
+  }),
+  define({
+    name: 'update_object',
+    kind: 'edit',
+    description: 'Set several fields of one object at once — all or none, as one undo step. Fields by name or index.',
+    input: { object: z.string(), fields: z.record(z.string(), value), class: cls },
+    run: (s, a) => s.updateObject(a.object, a.fields, a.class),
+  }),
+  define({
+    name: 'add_object',
+    kind: 'edit',
+    description:
+      'Add an object of any class (call describe_class first). `fields` by name; omitted fields take EnergyPlus ' +
+      'defaults. A repeating tail — vertices, Schedule:Compact lines, list entries — goes in `extensible`, one inner ' +
+      'array per group in the group’s field order. Refused, with reasons, if a value or required field is wrong. ' +
+      'For zones, walls, windows and doors prefer extrude_zone and add_opening.',
+    input: {
+      class: z.string(),
+      name: z.string().optional(),
+      fields: z.record(z.string(), value).optional(),
+      extensible: z.array(z.array(value)).optional(),
+      after: z.string().optional().describe('Place after the object with this name; default: after the last of its class.'),
+    },
+    run: (s, a) => s.addObject({ className: a.class, name: a.name, fields: a.fields, extensible: a.extensible, after: a.after }),
+  }),
+  define({
+    name: 'rename_object',
+    kind: 'edit',
+    description:
+      'Rename an object and update every field that refers to it by name. Plain-text mentions (e.g. Output:Variable ' +
+      'keys) are listed but not changed.',
+    input: { object: z.string(), new_name: z.string(), class: cls },
+    run: (s, a) => s.renameObject(a.object, a.new_name, a.class),
+  }),
+  define({
+    name: 'duplicate_object',
+    kind: 'edit',
+    description: 'Copy an object under a new name, placed after it — e.g. a construction or schedule to vary. Not for surfaces.',
+    input: { object: z.string(), new_name: z.string(), class: cls },
+    run: (s, a) => s.duplicateObject(a.object, a.new_name, a.class),
+  }),
+  define({
+    name: 'remove_object',
+    kind: 'destructive',
+    description:
+      'Delete one object. Refused while other objects refer to it, listing them; with force it is deleted anyway and ' +
+      'they are left dangling. Surfaces are deleted with delete_surface.',
+    input: { object: z.string(), class: cls, force: z.boolean().optional() },
+    run: (s, a) => s.removeObject(a.object, a.class, a.force),
   }),
   define({
     name: 'extrude_zone',
