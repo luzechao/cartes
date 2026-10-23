@@ -32,7 +32,7 @@ describe('IDD table coverage', () => {
   })
 
   it('includes the classes that live outside the geometry group', () => {
-    for (const k of ['version', 'building', 'construction']) {
+    for (const k of ['version', 'building', 'construction', 'runperiod']) {
       expect(IDD_TABLE[k], k).toBeDefined()
     }
   })

@@ -4,11 +4,12 @@
  * Provides hierarchical navigation of the model:
  * - Zones -> Surfaces (Walls, Roofs, Floors, Ceilings) -> SubSurfaces & Attached Shading
  * - Detached Shading surfaces
+ * - Run periods, with their dates
  * - Other IDF objects (Constructions, Materials, Schedules, Controls, etc.)
  */
 import { useMemo, useState } from 'react'
 import type { IdfDocument, IdfObject } from '../parser/types.js'
-import type { Model, BuildingSurface, ShadingSurface, Zone } from '../model/index.js'
+import { runPeriods, runPeriodSummary, type Model, type BuildingSurface, type ShadingSurface, type Zone } from '../model/index.js'
 
 interface ObjectTreeProps {
   doc: IdfDocument
@@ -39,7 +40,7 @@ export function ObjectTree({
   }
 
   // Group surfaces by zone
-  const { zoneSurfaces, shadingSurfaces, otherObjects } = useMemo(() => {
+  const { zoneSurfaces, shadingSurfaces, runPeriodObjects, otherObjects } = useMemo(() => {
     const zMap = new Map<string, BuildingSurface[]>()
     for (const zid of model.zones.keys()) {
       zMap.set(zid, [])
@@ -60,10 +61,12 @@ export function ObjectTree({
       }
     }
 
-    // Collect non-surface objects
+    // Run periods get their own group; every other non-surface object goes under Other Objects.
+    const periods = runPeriods(doc)
+    const periodIds = new Set(periods.map((p) => p.id))
     const others: IdfObject[] = []
     for (const obj of doc.objects.values()) {
-      if (!model.surfaces.has(obj.id) && !model.zones.has(obj.id)) {
+      if (!model.surfaces.has(obj.id) && !model.zones.has(obj.id) && !periodIds.has(obj.id)) {
         others.push(obj)
       }
     }
@@ -71,6 +74,7 @@ export function ObjectTree({
     return {
       zoneSurfaces: zMap,
       shadingSurfaces: shading,
+      runPeriodObjects: periods,
       otherObjects: others,
     }
   }, [doc, model])
@@ -277,6 +281,34 @@ export function ObjectTree({
                       🎯
                     </button>
                   )}
+                </div>
+              )
+            })}
+          </div>
+        )}
+
+        {/* Run periods */}
+        {runPeriodObjects.length > 0 && (
+          <div className="tree-group">
+            <div className="tree-group__title">Run Periods ({runPeriodObjects.length})</div>
+            {runPeriodObjects.map((obj) => {
+              const name = obj.fields[0]?.value || obj.className
+              const dates = runPeriodSummary(obj, model.version)
+              if (q && !name.toLowerCase().includes(q) && !(dates ?? '').includes(q) && !'runperiod'.includes(q)) {
+                return null
+              }
+              const isSelected = selectedId === obj.id
+              return (
+                <div
+                  key={obj.id}
+                  className={`tree-node__item${isSelected ? ' tree-node__item--selected' : ''}`}
+                  onClick={() => onSelect(obj.id)}
+                  title={dates ? `${name}: ${dates}` : name}
+                >
+                  <span className="tree-node__icon">📅</span>
+                  <span className="tree-node__name">{name}</span>
+                  {dates && <span className="tree-node__meta">{dates}</span>}
+                  {obj.dirty && <span className="badge-dirty">M</span>}
                 </div>
               )
             })}

@@ -46,6 +46,10 @@ const GEOMETRY_GROUP = 'Thermal Zones and Surfaces'
  * `Daylighting:ReferencePoint` and `Output:IlluminanceMap` live in "Daylighting" but are
  * positioned in a zone's coordinate frame (per `GlobalGeometryRules` field 4), so a whole-zone
  * translate must carry them with it or leave the sensors outside the room they measure.
+ *
+ * `RunPeriod` lives in "Location and Climate". The object tree lists run periods on their own,
+ * summarized by their dates, which it reads by field name because the layout changed across
+ * releases (begin and end years were added in 9.0).
  */
 const EXTRA_CLASSES = new Set(
   [
@@ -55,6 +59,7 @@ const EXTRA_CLASSES = new Set(
     'Construction',
     'Daylighting:ReferencePoint',
     'Output:IlluminanceMap',
+    'RunPeriod',
   ].map((c) => c.toLowerCase()),
 )
 
