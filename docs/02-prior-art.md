@@ -382,9 +382,17 @@ One detail matters for scaling loads across releases: the field a calculation me
 renamed over time (`watts_per_zone_floor_area` became `watts_per_floor_area` in 22.x), but its
 position after the method field was not. `scale_loads` finds it by offset.
 
+### Later additions
+
+Cartes now includes whole-field and NodeList lookup, node-based HVAC inspection, schedule
+reference inspection and constant/compact-schedule editing, selected semantic parameters, a
+version-pinned upstream example index and IDD/reference lookup. These are narrower than
+EnergyPlus-MCP's managers and installed example library; see the current tool table in
+[README](../README.md#mcp-and-tools).
+
 ### Not taken (yet)
 
-HVAC loop discovery, topology and diagrams; window films and coatings; interactive plots; file
+Directed HVAC loop diagrams; window films and coatings; interactive plots; file
 management (there is no file system in a page); server logs.
 
 ---

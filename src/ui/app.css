@@ -1567,6 +1567,48 @@ button:disabled {
   font-variant-numeric: tabular-nums;
 }
 
+.simulate-panel__saved {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #3c404b;
+  font-size: 12px;
+}
+
+.simulate-panel__saved p {
+  margin: 0;
+  color: #a4a7b0;
+}
+
+.simulate-panel__saved-run {
+  padding: 8px;
+  border: 1px solid #3c404b;
+  border-radius: 6px;
+}
+
+.simulate-panel__saved-run summary {
+  cursor: pointer;
+  overflow-wrap: anywhere;
+}
+
+.simulate-panel__saved-actions {
+  display: flex;
+  gap: 8px;
+  margin: 8px 0;
+}
+
+.simulate-panel__saved-files {
+  margin-top: 8px;
+}
+
+.simulate-panel__saved-files button {
+  display: block;
+  margin-top: 5px;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
 /* Ribbon: compact commands, snapping, examples menu */
 .ribbon__stack {
   display: flex;
@@ -2188,6 +2230,54 @@ button:disabled {
 }
 
 .agent-tool__output {
+  color: #a9adb6;
+}
+
+.agent-tool__chart {
+  margin: 8px;
+  font-size: 11px;
+}
+
+.agent-tool__chart figcaption {
+  margin-bottom: 5px;
+  color: #c9ccd3;
+}
+
+.agent-tool__chart-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(50px, 2fr) auto;
+  align-items: center;
+  gap: 6px;
+  margin: 3px 0;
+}
+
+.agent-tool__chart-row span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.agent-tool__chart-row meter {
+  width: 100%;
+}
+
+.agent-tool__line-chart {
+  display: block;
+  width: 100%;
+  height: 100px;
+  color: #8fc1f2;
+  border-bottom: 1px solid #4a4d55;
+}
+
+.agent-tool__chart-axis {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  color: #a9adb6;
+}
+
+.agent-tool__data > summary {
+  padding: 4px 8px;
+  cursor: pointer;
   color: #a9adb6;
 }
 

@@ -10,7 +10,12 @@
 import { tool, type ToolSet } from 'ai'
 import { z } from 'zod'
 import { ModelSession, SessionError, type AttachedDocument } from '../mcp/session.js'
-import { sessionTools, type SessionTool, type ToolKind } from '../mcp/tools.js'
+import { parameter, sessionTools, type SessionTool, type ToolKind } from '../mcp/tools.js'
+import { emitIdf } from '../parser/index.js'
+import { comparisonCharts, type ScenarioBatchResult, type ScenarioInput } from '../simulate/index.js'
+import { exampleInput, exampleLibrary, fetchRemoteExample } from '../mcp/examples.js'
+import { datasetImportInput, datasetInput, datasetLibrary, planDatasetImport } from '../mcp/datasets.js'
+import { manualInput, readManualSection } from '../mcp/manual.js'
 import {
   filterOutputs,
   listReports,
@@ -19,10 +24,13 @@ import {
   reportedVariables,
   reportTable,
   resultsSummary,
+  seriesChart,
   timeseries,
+  withResultOutputs,
   type Cell,
   type QueryResult,
   type ResultsDb,
+  type SeriesStats,
 } from '../results/index.js'
 import { searchStations, type StationSummary } from '../weather/index.js'
 import type { EditMode } from './settings.js'
@@ -57,6 +65,10 @@ export interface AgentHost {
   approve(request: ApprovalRequest, signal?: AbortSignal): Promise<boolean>
   runPython(code: string): Promise<PythonOutcome>
   runSimulation(): Promise<SimulationReport>
+  runScenarios(scenarios: readonly ScenarioInput[], modelName: string, signal?: AbortSignal): Promise<{
+    result?: ScenarioBatchResult | undefined; error?: string | undefined; weather: string
+  }>
+  readTimeseries(args: { name: string; key?: string | undefined; frequency?: string | undefined }): Promise<SeriesStats[]>
   /** One statement against the last run's `eplusout.sql`. Rejects when there is none. */
   queryResults(sql: string, params: Cell[]): Promise<QueryResult>
   /** A text output file of the last run (`eplusout.rdd`, …), if there was one. */
@@ -154,6 +166,62 @@ export function createAgentTools(host: AgentHost, session = new ModelSession()):
     },
   })
 
+  tools.run_scenarios = tool({
+    description:
+      'Run 2–6 named scenarios sequentially using isolated copies of the current model and the same weather. ' +
+      'Changes are hypothetical and do not edit the open model. Supports selected semantic parameters and constant schedules; ' +
+      'include a baseline with no changes. Stops on a failed run or a browser storage error, and saves each returned run locally before the next. ' +
+      'The last scenario becomes last_run. Python plugins are not supported. Stopping waits for the current run to finish.',
+    inputSchema: z.object({
+      scenarios: z.array(z.object({
+        name: z.string().trim().min(1).max(80),
+        changes: z.array(z.discriminatedUnion('type', [
+          z.object({ type: z.literal('parameter'), parameter, name: z.string(), class: z.string().optional(), value: z.number() }),
+          z.object({ type: z.literal('constant_schedule'), name: z.string(), value: z.number(), acknowledge_shared: z.boolean().optional() }),
+        ])).max(20),
+      })).min(2).max(6),
+    }),
+    execute: async ({ scenarios }, { abortSignal }) => {
+      const doc = host.document()
+      if (!doc) return NO_MODEL
+      const names = new Set(scenarios.map((scenario) => scenario.name.trim().toLowerCase()))
+      if (names.size !== scenarios.length) return { error: 'Scenario names must be distinct.' }
+      if (doc.doc.byClass.has('pythonplugin:instance')) return { error: 'Scenario batches do not support PythonPlugin:Instance objects; plugin state can persist in the shared interpreter.' }
+      const source = emitIdf(doc.doc)
+      const prepared: ScenarioInput[] = []
+      const changes: Array<{ name: string; changes: unknown[]; outputsAddedForThisRun: string[] }> = []
+      for (const scenario of scenarios) {
+        if (abortSignal?.aborted) return { cancelled: true, message: 'Scenario batch cancelled before running.' }
+        try {
+          const copy = new ModelSession()
+          copy.openText(source, doc.name)
+          await copy.prepare()
+          const applied = scenario.changes.map((change) => change.type === 'parameter'
+            ? copy.setParameter(change.parameter, change.name, change.value, change.class)
+            : copy.setConstantSchedule(change.name, change.value, change.acknowledge_shared))
+          const outputs = withResultOutputs(copy.text())
+          prepared.push({ name: scenario.name, idf: outputs.idf })
+          changes.push({ name: scenario.name, changes: applied, outputsAddedForThisRun: outputs.added })
+        } catch (error) {
+          return { error: `Scenario '${scenario.name}': ${message(error)}`, message: 'No simulations were started.' }
+        }
+      }
+      try {
+        const batch = await host.runScenarios(prepared, doc.name, abortSignal)
+        if (!batch.result) return { error: batch.error ?? 'Scenario batch failed.', weather: batch.weather }
+        return limitOutput({
+          weather: batch.weather, stopped: batch.result.stopped, cancelled: batch.result.cancelled,
+          retentionError: batch.result.retentionError,
+          scenarios: batch.result.scenarios.map((result) => ({ ...result, ...changes.find((entry) => entry.name === result.name) })),
+          charts: comparisonCharts(batch.result.scenarios),
+          note: 'Each summary was captured before the next run. Saved scenario outputs can be exported from Simulate > Files; browser storage may be cleared or evicted. Results tools and Python last_run still access only the last worker run. Missing annual summaries are not zero; the open model was not edited.',
+        })
+      } catch (error) {
+        return { error: message(error) }
+      }
+    },
+  })
+
   // --- results of the last run ---------------------------------------------------------
 
   const db: ResultsDb = { query: (sql, params) => host.queryResults(sql, params ?? []) }
@@ -164,6 +232,87 @@ export function createAgentTools(host: AgentHost, session = new ModelSession()):
       return { error: message(e) }
     }
   }
+
+  tools.example_library = tool({
+    description: 'Search the catalog of EnergyPlus examples for the bundled engine version. Inspecting a non-bundled example fetches that one public file from the pinned GitHub commit.',
+    inputSchema: z.object(exampleInput),
+    execute: read((args) => exampleLibrary(args, async (filename, bundled) => {
+      if (!bundled) return fetchRemoteExample(filename)
+      const response = await fetch(`${import.meta.env?.BASE_URL ?? '/'}examples/${filename}`)
+      if (!response.ok) throw new Error(`Could not load example ${filename}: HTTP ${response.status}`)
+      return response.text()
+    })),
+  })
+
+  tools.dataset_library = tool({
+    description: 'Search filenames in the bundled engine version’s EnergyPlus DataSets, inspect classes/objects, or build a bounded read-only import plan. Use import_dataset to import a complete, compatible dependency closure.',
+    inputSchema: z.object(datasetInput),
+    execute: read((args) => datasetLibrary(args)),
+  })
+
+  tools.import_dataset = tool({
+    description: 'Import one named object and its IDD-referenced dependencies from the pinned EnergyPlus DataSet into the open model. Builds a read-only plan first; in ask mode, requests approval before attaching the latest document and rerunning version, reference, field, and name-conflict checks. The complete import is one undoable edit.',
+    inputSchema: z.object(datasetImportInput),
+    execute: async (args, { toolCallId, abortSignal }) => {
+      if (!host.document()) return NO_MODEL
+      try {
+        const plan = await planDatasetImport(args)
+        if (plan.truncated) return { error: 'Cannot import a truncated DataSet plan. Increase the plan limit or choose a smaller dependency closure.' }
+        if (plan.references.some((reference) => reference.status === 'ambiguous')) {
+          return { error: 'Cannot import a DataSet plan with ambiguous IDD references.' }
+        }
+        if (abortSignal?.aborted) return { error: 'DataSet import was cancelled before approval.' }
+        if (host.editMode() === 'ask') {
+          const approved = await host.approve({
+            toolCallId,
+            toolName: 'import_dataset',
+            kind: 'edit',
+            input: {
+              file: plan.file,
+              version: plan.version,
+              root: plan.root,
+              objects: plan.objects.map(({ class: className, name }) => ({ class: className, name })),
+              referencesRequiringTarget: plan.references
+                .filter((reference) => reference.status === 'not_in_dataset')
+                .map(({ from, field, name }) => ({ from, field, name })),
+            },
+          }, abortSignal)
+          if (!approved) return { rejected: true, message: 'The user declined this edit. Do not retry it; ask what they would like instead.' }
+        }
+        const latest = host.document()
+        if (!latest) return NO_MODEL
+        session.attach(latest)
+        await session.prepare()
+        const current = host.document()
+        if (!current) return NO_MODEL
+        session.attach(current)
+        const result = session.importDatasetObjects(plan.version, plan.objects.map((object) => ({
+          class: object.class,
+          name: object.name,
+          fields: object.fields.map(({ index, value }) => ({ index, value })),
+        })), 'Agent: import dataset')
+        host.afterEdit()
+        return limitOutput({ source: { file: plan.file, version: plan.version, root: plan.root }, ...result })
+      } catch (e) {
+        if (e instanceof SessionError) return { error: e.message }
+        return { error: message(e) }
+      }
+    },
+  })
+
+  tools.read_manual_section = tool({
+    description: 'Fetch a version-matched object section from the online EnergyPlus I/O Reference at docs.idfkit.com, paged as plain text. Sends the public object-class documentation URL to that site.',
+    inputSchema: z.object(manualInput),
+    execute: read(async (args) => {
+      const doc = host.document()
+      const current = doc ? session : new ModelSession()
+      if (doc) current.attach(doc)
+      await current.prepare()
+      const url = current.describeClass(args.class).docs
+      if (!url) throw new SessionError(`No manual URL is available for ${args.class}.`)
+      return readManualSection(url, args)
+    }),
+  })
 
   tools.results_summary = tool({
     description:
@@ -216,6 +365,17 @@ export function createAgentTools(host: AgentHost, session = new ModelSession()):
       'is given. For anything finer, use run_python with sqlite3 on last_run + "/eplusout.sql".',
     inputSchema: z.object({ name: z.string(), key: z.string().optional(), frequency: z.string().optional() }),
     execute: read((a: { name: string; key?: string | undefined; frequency?: string | undefined }) => timeseries(db, a)),
+  })
+
+  tools.plot_timeseries = tool({
+    description: 'Plot one reported variable or meter from the last run. Supply a key when several are reported. Shows every value for up to 48 points, otherwise monthly sums or means. Missing outputs require add_outputs and another simulation.',
+    inputSchema: z.object({ name: z.string(), key: z.string().optional(), frequency: z.string().optional() }),
+    execute: read(async (args) => {
+      const series = await host.readTimeseries(args)
+      if (series.length !== 1) throw new Error(series.length ? `This variable has ${series.length} keys; supply a key.` : 'No values were recorded for this variable.')
+      const { chart, note } = seriesChart(series[0]!)
+      return { charts: [chart], note, statistics: series[0] }
+    }),
   })
 
   tools.query_results = tool({

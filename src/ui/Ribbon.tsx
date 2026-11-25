@@ -567,7 +567,6 @@ function SimulateTab(props: RibbonProps): React.JSX.Element {
           icon={<ConsoleIcon />}
           label="Console"
           onClick={props.onToggleConsole}
-          disabled={off}
           active={props.consoleVisible}
           title="Console output, messages and output files in the sidebar"
         />

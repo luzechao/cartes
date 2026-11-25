@@ -8,7 +8,16 @@ import { createRequire } from 'node:module'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { describe, expect, it } from 'vitest'
+import { localBundle } from '@idfkit/schemas/node'
 import { createEngine } from '../../src/simulate/engine.js'
+import { runScenarioBatch } from '../../src/simulate/scenarios.js'
+import { seriesChart, timeseries, withResultOutputs } from '../../src/results/index.js'
+import { queryOverPython } from '../../src/results/python.js'
+import { ModelSession } from '../../src/mcp/session.js'
+import { setSchemaBundle } from '../../src/schema/index.js'
+import 'fake-indexeddb/auto'
+import { unzipSync, strFromU8 } from 'fflate'
+import { ScenarioStore } from '../../src/simulate/scenarioStore.js'
 
 const fixture = fileURLToPath(new URL('../fixtures/testfiles/1ZoneUncontrolled.idf', import.meta.url))
 const require = createRequire(import.meta.url)
@@ -97,5 +106,51 @@ describe.skipIf(!existsSync(fixture))('simulation engine (Node)', () => {
     // The run's console output went to the simulation log, and REPL output did not.
     expect(logLines).toContain('EnergyPlus Completed Successfully.')
     expect(logLines).not.toContain('a')
+
+    setSchemaBundle(localBundle())
+    const model = new ModelSession()
+    model.openText(readFileSync('public/examples/5ZoneAirCooled.idf', 'utf8'))
+    await model.prepare()
+    model.setSimulationSettings({ runPeriod: { beginMonth: 1, beginDay: 1, endMonth: 1, endDay: 3 } })
+    const baseline = withResultOutputs(model.text()).idf
+    model.setParameter('fan_efficiency', 'Supply Fan 1', 0.3)
+    const alternative = withResultOutputs(model.text()).idf
+    const epw = readFileSync('public/examples/USA_IL_Chicago-OHare.Intl.AP.725300_TMY3.epw')
+    const db = { query: (sql: string, params: Array<string | number | null> = []) => queryOverPython(async (code) => {
+      let stdout = ''
+      const result = await engine.exec(code, (stream, line) => { if (stream === 'out') stdout += `${line}\n` })
+      return { ...result, stdout }
+    }, sql, params) }
+    const saved = new ScenarioStore('real-engine-scenarios')
+    const batch = await runScenarioBatch(
+      [{ name: 'Baseline', idf: baseline }, { name: 'Lower fan efficiency', idf: alternative }],
+      { epw },
+      (request) => engine.run(request),
+      db,
+      () => false,
+      async (input, report, outcome) => {
+        await saved.retain({ id: 'real-batch', createdAt: new Date().toISOString(), modelName: '5ZoneAirCooled.idf',
+          weather: 'Chicago.epw' }, input, report, outcome)
+      },
+    )
+    expect(batch.scenarios.map((scenario) => scenario.status)).toEqual(['completed', 'completed'])
+    expect(batch.scenarios[0]!.results?.siteEnergy?.kwh).toBeGreaterThan(0)
+    expect(batch.scenarios[1]!.results?.siteEnergy?.kwh).toBeGreaterThan(batch.scenarios[0]!.results!.siteEnergy!.kwh)
+    const savedRuns = await saved.list()
+    expect(savedRuns).toHaveLength(2)
+    for (const [run, idf] of [[savedRuns[1]!, baseline], [savedRuns[0]!, alternative]] as const) {
+      const archive = unzipSync(await saved.archive(run.id))
+      expect(strFromU8(archive['model/scenario.idf']!)).toBe(idf)
+      expect(archive['outputs/eplusout.sql']?.byteLength).toBeGreaterThan(0)
+      expect(archive['outputs/eplusout.err']?.byteLength).toBeGreaterThan(0)
+      expect(Object.keys(archive).filter((name) => name.startsWith('outputs/'))).toHaveLength(run.outputNames.length)
+    }
+    await saved.delete()
+    const series = await timeseries(db, { name: 'Site Outdoor Air Drybulb Temperature', frequency: 'Hourly' })
+    expect(series).toHaveLength(1)
+    expect(series[0]!.count).toBe(72)
+    expect(seriesChart(series[0]!).chart.points).toHaveLength(1)
+    await expect(engine.run({ idf: baseline, files: { 'missing-directory/input.txt': new Uint8Array([1]) } })).rejects.toThrow()
+    expect((await repl('last_run is None')).outcome.value).toBe('True')
   })
 })

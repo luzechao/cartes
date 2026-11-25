@@ -110,6 +110,12 @@ export interface Summary {
 /** A field value as tools accept it: numbers are written as given. */
 export type FieldInput = string | number
 
+export interface DatasetImportObject {
+  class: string
+  name: string
+  fields: Array<{ index: number; value: string }>
+}
+
 /** Field issues returned by `validate` beyond this many are counted, not listed. */
 const MAX_FIELD_ISSUES = 150
 
@@ -134,6 +140,32 @@ const LOAD_CLASSES: Record<string, Record<string, number>> = {
 /** Methods whose value is a per-floor-area density, and those whose value is its inverse. */
 const PER_AREA = new Set(['people/area', 'watts/area', 'power/area', 'flow/area'])
 const ABSOLUTE = new Set(['people', 'lightinglevel', 'equipmentlevel', 'flow/zone'])
+
+const SEMANTIC_PARAMETERS: Record<string, Array<{ className: string; field: string; units: string; minimum: number; inclusiveMinimum?: boolean; maximum?: number }>> = {
+  window_u_factor: [{ className: 'WindowMaterial:SimpleGlazingSystem', field: 'u_factor', units: 'W/m2-K', minimum: 0 }],
+  window_shgc: [{ className: 'WindowMaterial:SimpleGlazingSystem', field: 'solar_heat_gain_coefficient', units: 'dimensionless', minimum: 0, maximum: 1 }],
+  cooling_cop: [{ className: 'Coil:Cooling:DX:SingleSpeed', field: 'gross_rated_cooling_cop', units: 'W/W', minimum: 0 }],
+  heating_cop: [{ className: 'Coil:Heating:DX:SingleSpeed', field: 'gross_rated_heating_cop', units: 'W/W', minimum: 0 }],
+  heating_efficiency: [
+    { className: 'Coil:Heating:Fuel', field: 'burner_efficiency', units: 'dimensionless', minimum: 0, maximum: 1 },
+    { className: 'Coil:Heating:Electric', field: 'efficiency', units: 'dimensionless', minimum: 0, maximum: 1 },
+    { className: 'Boiler:HotWater', field: 'nominal_thermal_efficiency', units: 'dimensionless', minimum: 0 },
+  ],
+  fan_efficiency: ['Fan:ConstantVolume', 'Fan:VariableVolume', 'Fan:OnOff'].map((className) =>
+    ({ className, field: 'fan_total_efficiency', units: 'dimensionless', minimum: 0, maximum: 1 })),
+  water_heater_efficiency: ['WaterHeater:Mixed', 'WaterHeater:Stratified'].map((className) =>
+    ({ className, field: 'heater_thermal_efficiency', units: 'dimensionless', minimum: 0 })),
+  water_heater_on_parasitic: ['WaterHeater:Mixed', 'WaterHeater:Stratified'].map((className) =>
+    ({ className, field: 'on_cycle_parasitic_fuel_consumption_rate', units: 'W', minimum: 0, inclusiveMinimum: true })),
+  water_heater_off_parasitic: ['WaterHeater:Mixed', 'WaterHeater:Stratified'].map((className) =>
+    ({ className, field: 'off_cycle_parasitic_fuel_consumption_rate', units: 'W', minimum: 0, inclusiveMinimum: true })),
+  water_heater_on_loss: [{ className: 'WaterHeater:Mixed', field: 'on_cycle_loss_coefficient_to_ambient_temperature', units: 'W/K', minimum: 0, inclusiveMinimum: true }],
+  water_heater_off_loss: [{ className: 'WaterHeater:Mixed', field: 'off_cycle_loss_coefficient_to_ambient_temperature', units: 'W/K', minimum: 0, inclusiveMinimum: true }],
+  water_use_peak_flow: [{ className: 'WaterUse:Equipment', field: 'peak_flow_rate', units: 'm3/s', minimum: 0, inclusiveMinimum: true }],
+  outdoor_air_per_person: [{ className: 'DesignSpecification:OutdoorAir', field: 'outdoor_air_flow_per_person', units: 'm3/s-person', minimum: 0, inclusiveMinimum: true }],
+  outdoor_air_per_area: [{ className: 'DesignSpecification:OutdoorAir', field: 'outdoor_air_flow_per_zone_floor_area', units: 'm3/s-m2', minimum: 0, inclusiveMinimum: true }],
+  outdoor_air_per_zone: [{ className: 'DesignSpecification:OutdoorAir', field: 'outdoor_air_flow_per_zone', units: 'm3/s', minimum: 0, inclusiveMinimum: true }],
+}
 
 export interface LoadEntry {
   class: string
@@ -249,6 +281,52 @@ export class ModelSession {
     }
   }
 
+  /** A compact pre-simulation snapshot; weather selection is owned by the host, not the IDF. */
+  checkReadiness(): {
+    model: { name: string; version: string; zones: number; surfaces: number }
+    validation: { errors: number; warnings: number; issues: ReturnType<ModelSession['validate']>; omitted: number }
+    checks: {
+      siteLocation: { present: boolean }
+      designDays: { count: number; names: string[] }
+      runPeriods: { count: number; names: string[] }
+      zones: { count: number; withoutFloorArea: string[] }
+      internalLoads: { count: number; byClass: Record<string, number> }
+      weatherFile: { status: 'host-managed'; note: string }
+    }
+  } {
+    const summary = this.summary()
+    const issues = this.validate()
+    const settings = this.simulationSettings()
+    const zones = this.listZones()
+    const loads = this.inspectLoads().loads
+    const byClass: Record<string, number> = {}
+    for (const load of loads) byClass[load.class] = (byClass[load.class] ?? 0) + 1
+    const shownIssues = issues.slice(0, 20)
+    return {
+      model: { name: summary.name, version: summary.version, zones: summary.zones, surfaces: summary.surfaces },
+      validation: {
+        errors: issues.filter((i) => i.severity === 'error').length,
+        warnings: issues.filter((i) => i.severity === 'warning').length,
+        issues: shownIssues,
+        omitted: issues.length - shownIssues.length,
+      },
+      checks: {
+        siteLocation: { present: settings.location !== null },
+        designDays: { count: settings.designDays.length, names: settings.designDays },
+        runPeriods: {
+          count: settings.runPeriods.length,
+          names: settings.runPeriods.map((period) => period.name ?? ''),
+        },
+        zones: { count: zones.length, withoutFloorArea: zones.filter((zone) => zone.floorArea <= 0).map((zone) => zone.name) },
+        internalLoads: { count: loads.length, byClass },
+        weatherFile: {
+          status: 'host-managed',
+          note: 'Weather selection is not stored in the IDF; check the simulation host or the app’s Simulate tab.',
+        },
+      },
+    }
+  }
+
   /** Class counts, or — given a class — the names of its objects. */
   listObjects(
     className?: string,
@@ -343,6 +421,526 @@ export class ModelSession {
     }
   }
 
+  /** Find whole-field matches, including objects connected through a NodeList. */
+  findObjects(args: { classPattern?: string | undefined; name?: string | undefined; nameContains?: string | undefined; limit?: number | undefined }) {
+    const o = this.need()
+    this.needSchema()
+    const pattern = args.classPattern?.trim().toLowerCase()
+    const parts = pattern?.split('*')
+    const matchesClass = (cls: string): boolean => {
+      if (!parts) return true
+      const escaped = parts.map((p) => p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')).join('.*')
+      return new RegExp(`^${escaped}$`, 'i').test(cls)
+    }
+    const wanted = args.name?.trim().toLowerCase()
+    if (args.name !== undefined && !wanted) throw new SessionError('The name must not be blank.')
+    const via = new Map<string, string>()
+    if (wanted) {
+      for (const id of o.doc.byClass.get('nodelist') ?? []) {
+        const obj = o.doc.objects.get(id)!
+        if (obj.fields.slice(1).some((f) => f.value.trim().toLowerCase() === wanted)) {
+          const list = obj.fields[0]?.value.trim()
+          if (list) via.set(list.toLowerCase(), list)
+        }
+      }
+    }
+    const results = []
+    for (const id of o.doc.order) {
+      const obj = o.doc.objects.get(id)!
+      const type = this.typeOf(obj)
+      const name = type?.anon ? '' : (obj.fields[0]?.value ?? '')
+      if (!matchesClass(obj.className) || (args.nameContains && !name.toLowerCase().includes(args.nameContains.toLowerCase()))) continue
+      const fields = obj.fields.flatMap((f, index) => {
+        const value = f.value.trim().toLowerCase()
+        if (!wanted || !value || (value !== wanted && !via.has(value))) return []
+        return [{ index, field: this.fieldLabel(obj, index), value: f.value, relation: index === 0 && !type?.anon ? 'defines' : 'references', ...(value !== wanted ? { via: via.get(value) } : {}) }]
+      })
+      if (wanted && !fields.length) continue
+      results.push({ class: obj.className, name, matches: fields })
+    }
+    const limit = args.limit ?? 100
+    return { total: results.length, results: results.slice(0, limit), truncated: results.length > limit }
+  }
+
+  /** Report node connections and candidate directions derived from inlet/outlet field names. */
+  inspectHvacTopology(args: { loop?: string | undefined; limit?: number | undefined } = {}) {
+    const o = this.need()
+    this.needSchema()
+    const loops = [...o.doc.objects.values()].filter((obj) => /^(airloophvac|plantloop|condenserloop)$/i.test(obj.className))
+    const selected = args.loop
+      ? loops.filter((obj) => obj.fields[0]?.value.trim().toLowerCase() === args.loop!.trim().toLowerCase())
+      : loops
+    if (args.loop && !selected.length) throw new SessionError(`No air, plant or condenser loop named '${args.loop}'.`)
+    const components = [...o.doc.objects.values()].flatMap((obj) => {
+      const type = this.typeOf(obj)
+      if (!type) return []
+      const nodes = obj.fields.flatMap((f, index) => {
+        const slot = slotAt(type, index)
+        if (!slot || !/(^|_)node(_|$)/i.test(slot.key) || !f.value.trim()) return []
+        return [{ field: displayName(slot), value: f.value, acceptsNodeList: /nodelist|_node_names$/.test(slot.key) }]
+      })
+      return nodes.length ? [{ id: obj.id, class: obj.className, name: type.anon ? '' : (obj.fields[0]?.value ?? ''), nodes }] : []
+    })
+    const nodeLists = new Map<string, string[]>()
+    const ambiguousNodeLists = new Set<string>()
+    for (const id of o.doc.byClass.get('nodelist') ?? []) {
+      const obj = o.doc.objects.get(id)!
+      const name = obj.fields[0]?.value.trim().toLowerCase()
+      if (!name) continue
+      if (nodeLists.has(name) || ambiguousNodeLists.has(name)) {
+        nodeLists.delete(name)
+        ambiguousNodeLists.add(name)
+      } else {
+        nodeLists.set(name, obj.fields.slice(1).map((f) => f.value.trim()).filter(Boolean))
+      }
+    }
+    type Endpoint = { class: string; name: string; field: string; direction: 'inlet' | 'outlet' | 'unknown'; via?: string }
+    type IndexedEndpoint = Endpoint & { objectId: string }
+    const nodes = new Map<string, { node: string; endpoints: IndexedEndpoint[] }>()
+    const emptyNodeLists = new Set<string>()
+    for (const component of components) {
+      for (const field of component.nodes) {
+        const fieldKey = field.value.trim().toLowerCase()
+        const listed = field.acceptsNodeList ? nodeLists.get(fieldKey) : undefined
+        if (listed?.length === 0) emptyNodeLists.add(fieldKey)
+        const expanded = listed?.length ? [...new Set(listed)] : undefined
+        const unresolvedList = field.acceptsNodeList && (ambiguousNodeLists.has(fieldKey) || listed?.length === 0)
+        const isLoop = /^(airloophvac|plantloop|condenserloop)$/i.test(component.class)
+        const direction = isLoop || unresolvedList || ['branch', 'nodelist'].includes(component.class.toLowerCase())
+          ? 'unknown'
+          : /\binlet\b/i.test(field.field)
+            ? 'inlet'
+            : /\boutlet\b/i.test(field.field)
+              ? 'outlet'
+              : 'unknown'
+        for (const node of expanded ?? [field.value.trim()]) {
+          const key = node.toLowerCase()
+          const entry = nodes.get(key) ?? { node, endpoints: [] }
+          entry.endpoints.push({ objectId: component.id, class: component.class, name: component.name, field: field.field, direction, ...(expanded ? { via: field.value } : {}) })
+          nodes.set(key, entry)
+        }
+      }
+    }
+    const connections = [...nodes.values()].filter((entry) => entry.endpoints.length > 1)
+    const limit = args.limit ?? 200
+    const directedConnections: Array<{ node: string; from: Endpoint; to: Endpoint }> = []
+    let totalDirectedConnections = 0
+    const publicEndpoint = ({ objectId: _objectId, ...endpoint }: IndexedEndpoint): Endpoint => endpoint
+    for (const connection of connections) {
+      const outlets = connection.endpoints.filter((endpoint) => endpoint.direction === 'outlet')
+      const inlets = connection.endpoints.filter((endpoint) => endpoint.direction === 'inlet')
+      const inletsByObject = new Map<string, number>()
+      for (const inlet of inlets) inletsByObject.set(inlet.objectId, (inletsByObject.get(inlet.objectId) ?? 0) + 1)
+      for (const outlet of outlets) {
+        totalDirectedConnections += inlets.length - (inletsByObject.get(outlet.objectId) ?? 0)
+        if (directedConnections.length >= limit) continue
+        for (const inlet of inlets) {
+          if (outlet.objectId === inlet.objectId) continue
+          directedConnections.push({ node: connection.node, from: publicEndpoint(outlet), to: publicEndpoint(inlet) })
+          if (directedConnections.length >= limit) break
+        }
+      }
+    }
+    return {
+      loops: selected.map((obj) => ({ class: obj.className, name: obj.fields[0]?.value ?? '', fields: this.inspect(obj.fields[0]?.value ?? '', obj.className).fields })),
+      components: components.slice(0, limit).map(({ id: _id, ...component }) => component),
+      connections: connections.slice(0, limit).map((connection) => ({ node: connection.node, endpoints: connection.endpoints.map(publicEndpoint) })),
+      directedConnections,
+      totalComponents: components.length,
+      totalConnections: connections.length,
+      totalDirectedConnections,
+      truncated: components.length > limit || connections.length > limit || totalDirectedConnections > limit,
+      ambiguousNodeLists: [...ambiguousNodeLists],
+      emptyNodeLists: [...emptyNodeLists],
+      note: 'Directed connections are candidates from matching outlet and inlet field names, not validated flow paths. Loop boundaries, branch declarations and other ambiguous fields have unknown direction; no paths through components are inferred. Components and connections are model-wide, even when a loop is selected.',
+    }
+  }
+
+  inspectLoopStructure(name: string, className: 'AirLoopHVAC' | 'PlantLoop' | 'CondenserLoop') {
+    const o = this.need()
+    this.needSchema()
+    const loop = this.objectNamed(name, className, { unique: true })
+    const fields = (obj: IdfObject, field: string) => obj.fields[this.fieldIndexOf(obj, field)]?.value.trim() ?? ''
+    const sides = className === 'AirLoopHVAC'
+      ? [{ name: 'supply', branches: 'branch_list_name', connectors: 'connector_list_name' }]
+      : className === 'PlantLoop'
+        ? [{ name: 'plant', branches: 'plant_side_branch_list_name', connectors: 'plant_side_connector_list_name' },
+          { name: 'demand', branches: 'demand_side_branch_list_name', connectors: 'demand_side_connector_list_name' }]
+        : [{ name: 'condenser', branches: 'condenser_side_branch_list_name', connectors: 'condenser_side_connector_list_name' },
+          { name: 'demand', branches: 'condenser_demand_side_branch_list_name', connectors: 'condenser_demand_side_connector_list_name' }]
+    const result = sides.map((side) => {
+      const warnings: string[] = []
+      const lookup = (cls: string, objectName: string) => {
+        const objects = (o.doc.byClass.get(cls.toLowerCase()) ?? [])
+          .map((id) => o.doc.objects.get(id)!)
+          .filter((obj) => obj.fields[0]?.value.trim().toLowerCase() === objectName.toLowerCase())
+        if (objects.length !== 1) {
+          warnings.push(`${cls} '${objectName}' is ${objects.length ? 'ambiguous' : 'missing'}.`)
+          return undefined
+        }
+        return objects[0]
+      }
+      const validateBranchNodes = (obj: IdfObject | undefined, inlet: string, outlet: string) => {
+        if (!obj) return { status: 'unavailable' as const, actual: [] as Array<{ field: string; direction: 'inlet' | 'outlet'; node: string }> }
+        const type = this.typeOf(obj)
+        if (!type) return { status: 'unavailable' as const, actual: [] as Array<{ field: string; direction: 'inlet' | 'outlet'; node: string }> }
+        const actual = type.f.flatMap((key, index) => {
+          const match = /(?:^|_)(inlet|outlet)_node(?:_name)?$/i.exec(key)
+          const node = obj.fields[index]?.value.trim() ?? ''
+          return match ? [{ field: key, direction: match[1]!.toLowerCase() as 'inlet' | 'outlet', node }] : []
+        })
+        if (!actual.some((field) => field.direction === 'inlet') || !actual.some((field) => field.direction === 'outlet')) {
+          return { status: 'unavailable' as const, actual }
+        }
+        const matchesInlet = actual.some((field) => field.direction === 'inlet' && field.node.toLowerCase() === inlet.toLowerCase())
+        const matchesOutlet = actual.some((field) => field.direction === 'outlet' && field.node.toLowerCase() === outlet.toLowerCase())
+        return { status: matchesInlet && matchesOutlet ? 'matched' as const : 'mismatch' as const, actual }
+      }
+      const branchListName = fields(loop, side.branches)
+      const list = branchListName ? lookup('BranchList', branchListName) : undefined
+      if (!branchListName) warnings.push(`No ${side.branches} is specified.`)
+      const names = list?.fields.slice(1).map((f) => f.value.trim()).filter(Boolean) ?? []
+      if (list && !names.length) warnings.push(`BranchList '${branchListName}' is empty.`)
+      if (names.length > 200) throw new SessionError(`BranchList '${branchListName}' exceeds the 200-branch inspection limit.`)
+      const seen = new Set<string>()
+      const branches = names.map((branchName) => {
+        const key = branchName.toLowerCase()
+        if (seen.has(key)) warnings.push(`Branch '${branchName}' is listed more than once.`)
+        seen.add(key)
+        const branch = lookup('Branch', branchName)
+        const components: Array<{
+          class: string; name: string; inlet: string; outlet: string
+          nodeValidation: ReturnType<typeof validateBranchNodes>
+        }> = []
+        if (branch) {
+          if (branch.fields.length > 4002) throw new SessionError(`Branch '${branchName}' exceeds the 1000-component inspection limit.`)
+          for (let i = 2; i < branch.fields.length; i += 4) {
+            const [cls, componentName, inlet, outlet] = [0, 1, 2, 3].map((offset) => branch.fields[i + offset]?.value.trim() ?? '')
+            if (![cls, componentName, inlet, outlet].some(Boolean)) continue
+            if (!cls || !componentName || !inlet || !outlet) warnings.push(`Branch '${branchName}' has an incomplete component declaration.`)
+            const component = cls && componentName ? lookup(cls, componentName) : undefined
+            const nodeValidation = validateBranchNodes(component, inlet!, outlet!)
+            if (nodeValidation.status === 'mismatch') {
+              const actual = nodeValidation.actual
+                .map((field) => `${field.direction} '${field.node || '<blank>'}' (${field.field})`).join(', ')
+              warnings.push(`Branch '${branchName}' declares '${componentName}' nodes '${inlet}' → '${outlet}', but its object fields are ${actual}.`)
+            }
+            if (components.length && inlet && components[components.length - 1]!.outlet &&
+              inlet.toLowerCase() !== components[components.length - 1]!.outlet.toLowerCase()) {
+              warnings.push(`Adjacent components on branch '${branchName}' have different connecting nodes.`)
+            }
+            components.push({ class: cls!, name: componentName!, inlet: inlet!, outlet: outlet!, nodeValidation })
+          }
+          if (!components.length) warnings.push(`Branch '${branchName}' has no components.`)
+        }
+        return { name: branchName, resolved: !!branch, components }
+      })
+      const edges: Array<{ from: string; to: string; connector: string }> = []
+      const connectorListName = fields(loop, side.connectors)
+      const connectorList = connectorListName ? lookup('ConnectorList', connectorListName) : undefined
+      if (connectorList) {
+        for (const i of [1, 3]) {
+          const cls = connectorList.fields[i]?.value.trim() ?? ''
+          const connectorName = connectorList.fields[i + 1]?.value.trim() ?? ''
+          if (!cls && !connectorName) continue
+          if (!connectorName || !['connector:splitter', 'connector:mixer'].includes(cls.toLowerCase())) {
+            warnings.push(`ConnectorList '${connectorListName}' has an incomplete or unsupported connector.`)
+            continue
+          }
+          const connector = lookup(cls, connectorName)
+          if (!connector) continue
+          if (connector.fields.length > 202) throw new SessionError(`Connector '${connectorName}' exceeds the 200-branch inspection limit.`)
+          const single = connector.fields[1]?.value.trim() ?? ''
+          const multiple = connector.fields.slice(2).map((f) => f.value.trim()).filter(Boolean)
+          if (!single || !multiple.length) warnings.push(`${cls} '${connectorName}' has incomplete branch connections.`)
+          for (const other of multiple) {
+            const from = cls.toLowerCase() === 'connector:splitter' ? single : other
+            const to = cls.toLowerCase() === 'connector:splitter' ? other : single
+            if (!from || !seen.has(from.toLowerCase()) || !seen.has(to.toLowerCase())) {
+              warnings.push(`${cls} '${connectorName}' refers to a branch outside the selected BranchList.`)
+            } else {
+              edges.push({ from, to, connector: connectorName })
+            }
+          }
+        }
+      }
+      const ids = new Map<string, number>()
+      branches.forEach((branch, i) => { if (!ids.has(branch.name.toLowerCase())) ids.set(branch.name.toLowerCase(), i) })
+      const label = (text: string) => text.replace(/&/g, '#amp;').replace(/"/g, '#quot;').replace(/[\r\n]/g, ' ')
+      const diagram = ['flowchart LR', ...branches.map((branch, i) => `  b${i}["${label(branch.name)}"]`),
+        ...edges.map((edge) => `  b${ids.get(edge.from.toLowerCase())} --> b${ids.get(edge.to.toLowerCase())}`)].join('\n')
+      return { side: side.name, branchList: branchListName, connectorList: connectorListName, branches, edges, warnings, diagram }
+    })
+    return {
+      loop: { class: loop.className, name: loop.fields[0]?.value ?? '' }, sides: result,
+      note: 'Branch component node checks compare declared inlet/outlet nodes with the named object fields in the loaded IDD; unavailable means the object or node fields could not be checked. These checks do not validate EnergyPlus flow or a complete loop diagram. Connector arrows reflect declarations only, and air-loop demand-side equipment is not shown.',
+    }
+  }
+
+  inspectSchedule(name: string, className?: string) {
+    this.needSchema()
+    const matches = [...this.need().doc.objects.values()].filter((candidate) =>
+      candidate.classKey.startsWith('schedule:') &&
+      (!className || candidate.classKey === className.trim().toLowerCase()) &&
+      candidate.fields[0]?.value.trim().toLowerCase() === name.trim().toLowerCase(),
+    )
+    if (!matches.length) throw new SessionError(`No schedule named '${name}'.`)
+    if (matches.length > 1) throw new SessionError(`Multiple schedules are named '${name}'; give the class.`)
+    const obj = matches[0]!
+    const refs = this.referrers(obj)
+    const queue = [obj]
+    const visited = new Set([obj.id])
+    const edges: Array<{ schedule: string; referrer: string }> = []
+    while (queue.length && edges.length < 200) {
+      const current = queue.shift()!
+      for (const ref of this.referrers(current).refs) {
+        if (edges.length >= 200) break
+        edges.push({ schedule: this.describeObject(current), referrer: formatReferrer(ref) })
+        const next = this.need().doc.objects.get(ref.id)
+        if (next?.classKey.startsWith('schedule:') && !visited.has(next.id)) {
+          visited.add(next.id)
+          queue.push(next)
+        }
+      }
+    }
+    return {
+      ...this.inspect(name, obj.className),
+      referencedBy: refs.refs.map(formatReferrer),
+      otherMentions: refs.mentions.map(formatReferrer),
+      referenceGraph: edges,
+      graphMayBeTruncated: edges.length >= 200,
+      note: 'The graph follows IDD-declared references through schedules only; textual mentions and unmodeled dependencies may also be affected.',
+    }
+  }
+
+  setConstantSchedule(name: string, value: number, acknowledgeShared = false) {
+    const o = this.need()
+    this.needSchema()
+    const obj = this.objectNamed(name, 'Schedule:Constant', { unique: true })
+    const refs = this.referrers(obj)
+    if ((refs.refs.length || refs.mentions.length) && !acknowledgeShared) {
+      throw new SessionError(`Schedule '${name}' has ${refs.refs.length} declared references and ${refs.mentions.length} textual mentions. Inspect it and explicitly acknowledge its uses before editing.`)
+    }
+    if (!Number.isFinite(value)) throw new SessionError('Schedule value must be finite.')
+    this.validateScheduleValue(obj, value)
+    const index = this.fieldIndexOf(obj, 'hourly_value')
+    this.checkValue(obj, index, value)
+    const changed = setFieldValue(o.doc, o.model, obj.id, index, String(value))
+    this.rebuild()
+    return { schedule: name, value, changed, referencedBy: refs.refs.map(formatReferrer) }
+  }
+
+  scaleCompactSchedule(name: string, factor: number, acknowledgeShared = false) {
+    const o = this.need()
+    this.needSchema()
+    if (!Number.isFinite(factor) || factor <= 0) throw new SessionError('The factor must be a positive finite number.')
+    const obj = this.objectNamed(name, 'Schedule:Compact', { unique: true })
+    const refs = this.referrers(obj)
+    if ((refs.refs.length || refs.mentions.length) && !acknowledgeShared) {
+      throw new SessionError(`Schedule '${name}' has ${refs.refs.length} declared references and ${refs.mentions.length} textual mentions. Inspect it and explicitly acknowledge its uses before editing.`)
+    }
+
+    if (!obj.fields[1]?.value.trim()) throw new SessionError('Scaling requires explicit ScheduleTypeLimits.')
+    const writes: Array<{ index: number; value: string }> = []
+    let expectingValue = false
+    for (let index = 2; index < obj.fields.length; index++) {
+      const text = obj.fields[index]!.value.trim()
+      if (expectingValue) {
+        if (!text || !Number.isFinite(Number(text))) throw new SessionError(`Expected a numeric value after Until in field ${index + 1}.`)
+        const value = Number((Number(text) * factor).toPrecision(12))
+        this.validateScheduleValue(obj, value)
+        writes.push({ index, value: String(Number(value.toPrecision(12))) })
+        expectingValue = false
+      } else if (/^until\s*:\s*\S/i.test(text)) {
+        expectingValue = true
+      } else if (!/^(through|for|interpolate)\s*:\s*\S/i.test(text)) {
+        throw new SessionError(`Unsupported Schedule:Compact field ${index + 1}: '${text}'. No values were changed.`)
+      }
+    }
+    if (expectingValue || !writes.length) throw new SessionError('Schedule:Compact has an incomplete Until or no values.')
+    let changed = 0
+    o.history.transact('Scale compact schedule', () => {
+      for (const write of writes) if (setFieldValue(o.doc, o.model, obj.id, write.index, write.value)) changed++
+    })
+    this.rebuild()
+    return { schedule: name, factor, changed, referencedBy: refs.refs.map(formatReferrer) }
+  }
+
+  setHourlySchedule(name: string, values: number[], acknowledgeShared = false) {
+    const o = this.need()
+    this.needSchema()
+    const obj = this.objectNamed(name, 'Schedule:Day:Hourly', { unique: true })
+    const refs = this.referrers(obj)
+    if ((refs.refs.length || refs.mentions.length) && !acknowledgeShared) {
+      throw new SessionError(`Schedule '${name}' has ${refs.refs.length} declared references and ${refs.mentions.length} textual mentions. Inspect it and explicitly acknowledge its uses before editing.`)
+    }
+    if (values.length !== 24) throw new SessionError('A day schedule requires exactly 24 hourly values.')
+    const writes = values.map((value, i) => {
+      this.validateScheduleValue(obj, value)
+      const index = this.fieldIndexOf(obj, `hour_${i + 1}`)
+      this.checkValue(obj, index, value)
+      return { index, value: String(value) }
+    })
+    let changed = 0
+    o.history.transact('Set hourly schedule', () => {
+      for (const write of writes) if (setFieldValue(o.doc, o.model, obj.id, write.index, write.value)) changed++
+    })
+    this.rebuild()
+    return { schedule: name, changed, referencedBy: refs.refs.map(formatReferrer), otherMentions: refs.mentions.map(formatReferrer) }
+  }
+
+  setDualSetpoints(name: string, heating: number, cooling: number, acknowledgeShared = false) {
+    const o = this.need()
+    this.needSchema()
+    if (!Number.isFinite(heating) || !Number.isFinite(cooling) || heating >= cooling) {
+      throw new SessionError('Heating and cooling must be finite temperatures in °C, with heating lower than cooling.')
+    }
+    const thermostat = this.objectNamed(name, 'ThermostatSetpoint:DualSetpoint', { unique: true })
+    const target = (field: string, value: number) => {
+      const scheduleName = thermostat.fields[this.fieldIndexOf(thermostat, field)]?.value.trim()
+      if (!scheduleName) throw new SessionError(`Thermostat '${name}' has no ${field}.`)
+      const obj = this.objectNamed(scheduleName, 'Schedule:Constant', { unique: true })
+      const lists = new Set(this.typeOf(obj)?.nref ?? [])
+      const matches = [...o.doc.objects.values()].filter((candidate) =>
+        candidate.fields[0]?.value.trim().toLowerCase() === scheduleName.toLowerCase() &&
+        this.typeOf(candidate)?.nref?.some((list) => lists.has(list)),
+      )
+      if (matches.length !== 1) throw new SessionError(`Schedule '${scheduleName}' has an ambiguous name across schedule classes.`)
+      const refs = this.referrers(obj)
+      if ((refs.refs.length || refs.mentions.length) && !acknowledgeShared) {
+        throw new SessionError(`Schedule '${scheduleName}' has ${refs.refs.length} declared references and ${refs.mentions.length} textual mentions. Inspect it and explicitly acknowledge its uses before editing.`)
+      }
+      const limitsName = obj.fields[this.fieldIndexOf(obj, 'schedule_type_limits_name')]?.value.trim()
+      if (limitsName) {
+        const limits = this.objectNamed(limitsName, 'ScheduleTypeLimits', { unique: true })
+        const unit = limits.fields[this.fieldIndexOf(limits, 'unit_type')]?.value.trim()
+        if (unit && unit.toLowerCase() !== 'temperature') throw new SessionError(`Schedule '${scheduleName}' has non-temperature unit type '${unit}'.`)
+      }
+      this.validateScheduleValue(obj, value)
+      const index = this.fieldIndexOf(obj, 'hourly_value')
+      this.checkValue(obj, index, value)
+      return { obj, name: scheduleName, index, value, refs }
+    }
+    const heat = target('heating_setpoint_temperature_schedule_name', heating)
+    const cool = target('cooling_setpoint_temperature_schedule_name', cooling)
+    if (heat.obj.id === cool.obj.id) throw new SessionError('Heating and cooling cannot use the same constant schedule.')
+    let changed = 0
+    o.history.transact('Set thermostat setpoints', () => {
+      for (const write of [heat, cool]) if (setFieldValue(o.doc, o.model, write.obj.id, write.index, String(write.value))) changed++
+    })
+    this.rebuild()
+    return { thermostat: name, changed, schedules: [heat, cool].map((write) => ({
+      name: write.name, value: write.value, referencedBy: write.refs.refs.map(formatReferrer), otherMentions: write.refs.mentions.map(formatReferrer),
+    })) }
+  }
+
+  setGlazingOptics(name: string, optics: {
+    solarTransmittance: number; solarFrontReflectance: number; solarBackReflectance: number
+    visibleTransmittance: number; visibleFrontReflectance: number; visibleBackReflectance: number
+  }, acknowledgeShared = false) {
+    const o = this.need()
+    this.needSchema()
+    const obj = this.objectNamed(name, 'WindowMaterial:Glazing', { unique: true })
+    const mode = obj.fields[this.fieldIndexOf(obj, 'optical_data_type')]?.value.trim()
+    if (mode?.toLowerCase() !== 'spectralaverage') {
+      throw new SessionError(`Glazing '${name}' must explicitly use SpectralAverage optical data; other optical models are not supported.`)
+    }
+    const refs = this.referrers(obj)
+    if ((refs.refs.length || refs.mentions.length) && !acknowledgeShared) {
+      throw new SessionError(`Glazing '${name}' has ${refs.refs.length} declared references and ${refs.mentions.length} textual mentions. Inspect it and explicitly acknowledge its uses before editing.`)
+    }
+    const pairs = [
+      ['solar_transmittance_at_normal_incidence', optics.solarTransmittance],
+      ['front_side_solar_reflectance_at_normal_incidence', optics.solarFrontReflectance],
+      ['back_side_solar_reflectance_at_normal_incidence', optics.solarBackReflectance],
+      ['visible_transmittance_at_normal_incidence', optics.visibleTransmittance],
+      ['front_side_visible_reflectance_at_normal_incidence', optics.visibleFrontReflectance],
+      ['back_side_visible_reflectance_at_normal_incidence', optics.visibleBackReflectance],
+    ] as const
+    for (const [field, value] of pairs) {
+      if (!Number.isFinite(value) || value < 0 || value > 1) throw new SessionError(`${field} must be between 0 and 1.`)
+      this.checkValue(obj, this.fieldIndexOf(obj, field), value)
+    }
+    if (optics.solarTransmittance + optics.solarFrontReflectance > 1 ||
+      optics.solarTransmittance + optics.solarBackReflectance > 1 ||
+      optics.visibleTransmittance + optics.visibleFrontReflectance > 1 ||
+      optics.visibleTransmittance + optics.visibleBackReflectance > 1) {
+      throw new SessionError('Transmittance plus reflectance must not exceed 1 on either side in either band.')
+    }
+    let changed = 0
+    o.history.transact('Set glazing optics', () => {
+      for (const [field, value] of pairs) {
+        if (setFieldValue(o.doc, o.model, obj.id, this.fieldIndexOf(obj, field), String(value))) changed++
+      }
+    })
+    this.rebuild()
+    return {
+      glazing: name, changed, referencedBy: refs.refs.map(formatReferrer), otherMentions: refs.mentions.map(formatReferrer),
+      note: 'These are user-supplied normal-incidence effective properties, not an automatic film or coating calculation. Every use of this material is affected.',
+    }
+  }
+
+  private validateScheduleValue(obj: IdfObject, value: number): void {
+    if (!Number.isFinite(value)) throw new SessionError('Schedule value must be finite.')
+    const typeIndex = this.fieldIndexOf(obj, 'schedule_type_limits_name')
+    const typeName = obj.fields[typeIndex]?.value.trim()
+    if (typeName) {
+      const limits = this.objectNamed(typeName, 'ScheduleTypeLimits', { unique: true })
+      const get = (field: string) => limits.fields[this.fieldIndexOf(limits, field)]?.value.trim() ?? ''
+      const lower = get('lower_limit_value')
+      const upper = get('upper_limit_value')
+      const numericType = get('numeric_type')
+      if ((lower && !Number.isFinite(Number(lower))) || (upper && !Number.isFinite(Number(upper)))) {
+        throw new SessionError(`ScheduleTypeLimits '${typeName}' has invalid bounds.`)
+      }
+      if (lower && value < Number(lower)) throw new SessionError(`Schedule value must be at least ${lower}.`)
+      if (upper && value > Number(upper)) throw new SessionError(`Schedule value must be at most ${upper}.`)
+      if (numericType.toLowerCase() === 'discrete' && !Number.isInteger(value)) throw new SessionError('This schedule requires an integer value.')
+      if (numericType && !['continuous', 'discrete'].includes(numericType.toLowerCase())) {
+        throw new SessionError(`Unknown schedule numeric type '${numericType}'.`)
+      }
+    }
+  }
+
+  inspectParameter(parameter: string, name: string, className?: string) {
+    const { obj, spec } = this.semanticTarget(parameter, name, className)
+    const index = this.fieldIndexOf(obj, spec.field)
+    const raw = obj.fields[index]?.value.trim() ?? ''
+    const type = this.typeOf(obj)
+    const slot = type ? slotAt(type, index) : undefined
+    const value = raw || (slot?.def?.d !== undefined ? String(slot.def.d) : '')
+    return {
+      parameter, class: spec.className, name, field: spec.field, value, units: spec.units,
+      source: raw ? 'explicit' : value ? 'schema default' : 'unspecified',
+      referencedBy: this.referrers(obj).refs.map(formatReferrer),
+    }
+  }
+
+  setParameter(parameter: string, name: string, value: number, className?: string) {
+    const o = this.need()
+    this.needSchema()
+    const { obj, spec } = this.semanticTarget(parameter, name, className)
+    if (!Number.isFinite(value) || (spec.inclusiveMinimum ? value < spec.minimum : value <= spec.minimum) || (spec.maximum !== undefined && value > spec.maximum)) {
+      throw new SessionError(`${parameter} must be ${spec.inclusiveMinimum ? 'at least' : 'greater than'} ${spec.minimum}${spec.maximum === undefined ? '' : ` and at most ${spec.maximum}`}.`)
+    }
+    const index = this.fieldIndexOf(obj, spec.field)
+    this.checkValue(obj, index, value)
+    const references = this.referrers(obj).refs.map(formatReferrer)
+    const changed = setFieldValue(o.doc, o.model, obj.id, index, String(value))
+    this.rebuild()
+    return { parameter, class: spec.className, name, field: spec.field, value, units: spec.units, changed, referencedBy: references }
+  }
+
+  private semanticTarget(parameter: string, name: string, className?: string) {
+    this.needSchema()
+    const specs = SEMANTIC_PARAMETERS[parameter]
+    if (!specs) throw new SessionError(`Unsupported parameter '${parameter}'. Supported: ${Object.keys(SEMANTIC_PARAMETERS).join(', ')}.`)
+    const obj = this.objectNamed(name, className, { unique: true })
+    const spec = specs.find((item) => item.className.toLowerCase() === obj.classKey)
+    if (!spec) throw new SessionError(`${parameter} supports ${specs.map((item) => item.className).join(', ')}, not ${obj.className}.`)
+    return { obj, spec }
+  }
+
   /** Classes whose name or IDD group contains every word of `query`. Any class EnergyPlus has, not only those in the file. */
   findClasses(query: string, limit?: number): { matches: ClassMatch[]; total: number } {
     return findClasses(this.needSchema(), query, this.prose, limit)
@@ -353,6 +951,57 @@ export class ModelSession {
     const d = describeClass(this.needSchema(), className, this.prose)
     if (!d) throw new SessionError(`EnergyPlus ${this.full?.schema?.version ?? ''} has no class '${className}'; try find_classes.`)
     return d
+  }
+
+  searchReference(query: string, limit = 30, offset = 0) {
+    const schema = this.needSchema()
+    if (!this.prose) throw new SessionError('The EnergyPlus IDD notes are not available.')
+    const words = query.toLowerCase().split(/\s+/).filter(Boolean)
+    if (!words.length) throw new SessionError('Enter words to search for.')
+    const matches: Array<{ class: string; field?: string; text: string; docs?: string }> = []
+    for (const className of schema.typeNames) {
+      const type = schema.get(className)!
+      const docs = describeClass(schema, className)?.docs
+      const add = (field: string | undefined, text: string) => {
+        const searchable = `${className} ${field ?? ''} ${text}`.toLowerCase()
+        if (words.every((word) => searchable.includes(word))) {
+          matches.push({ class: className, ...(field ? { field } : {}), text, ...(docs ? { docs } : {}) })
+        }
+      }
+      add(undefined, type.m === undefined ? '' : (this.prose[type.m] ?? ''))
+      for (const key of type.f) {
+        const def = type.p[key]
+        add(key, def?.n === undefined ? '' : (this.prose[def.n] ?? ''))
+      }
+      if (type.x) for (const key of type.x.fields) {
+        const def = type.x.p[key]
+        add(key, def?.n === undefined ? '' : (this.prose[def.n] ?? ''))
+      }
+    }
+    return {
+      source: `EnergyPlus ${schema.version} IDD names and notes, not full manuals`,
+      total: matches.length,
+      offset,
+      results: matches.slice(offset, offset + limit),
+    }
+  }
+
+  fieldReference(className: string, field: string) {
+    const schema = this.needSchema()
+    if (!this.prose) throw new SessionError('The EnergyPlus IDD notes are not available.')
+    const description = this.describeClass(className)
+    const type = schema.get(description.class)!
+    const index = slotIndex(type, field)
+    if (index === undefined) throw new SessionError(`No field '${field}' in ${description.class}.`)
+    const slot = slotAt(type, index)!
+    const metadata = [...description.fields, ...(description.extensible?.fields ?? [])].find((item) => item.name === slot.key)
+    const note = slot.def?.n === undefined ? undefined : this.prose[slot.def.n]
+    return {
+      source: `EnergyPlus ${schema.version} IDD, not the full manual`,
+      class: description.class,
+      field: { ...metadata, index, ...(note ? { note } : {}) },
+      ...(description.docs ? { manualUrl: description.docs } : {}),
+    }
   }
 
   /**
@@ -487,6 +1136,165 @@ export class ModelSession {
     return { created: this.describeObject(o.doc.objects.get(id)!), fields: values.length }
   }
 
+  /** Import a bounded DataSet dependency closure as one undoable edit after all checks pass. */
+  importDatasetObjects(
+    sourceVersion: string,
+    objects: readonly DatasetImportObject[],
+    undoLabel = 'Import DataSet objects',
+  ) {
+    const o = this.need()
+    const schema = this.needSchema()
+    const versionParts = (value: string) => value.trim().split('.').slice(0, 2).join('.')
+    const modelVersion = o.model.versionResolution.declared ?? o.model.version
+    if (versionParts(sourceVersion) !== versionParts(modelVersion)) {
+      throw new SessionError(`DataSet objects are for EnergyPlus ${sourceVersion}; the open model is ${modelVersion}. Open a ${sourceVersion} model or use a compatible source.`)
+    }
+    if (!objects.length) throw new SessionError('The DataSet import plan contains no objects.')
+    if (objects.length > 50) throw new SessionError('A single DataSet import is limited to 50 objects; create a smaller plan.')
+
+    const normalValues = (values: readonly string[]) => {
+      const trimmed = [...values]
+      while (trimmed.at(-1) === '') trimmed.pop()
+      return trimmed.map((value) => value.trim())
+    }
+    const sameValues = (left: readonly string[], right: readonly string[], named = true) => {
+      const a = normalValues(left)
+      const b = normalValues(right)
+      return a.length === b.length && a.every((value, i) =>
+        named && i === 0 ? value.toLowerCase() === b[i]!.toLowerCase() : value === b[i],
+      )
+    }
+    const prepared: Array<{ className: string; name: string; type: SlimType; values: string[] }> = []
+    const alreadyPresent: string[] = []
+    const seenIncoming = new Map<string, string[]>()
+
+    for (const source of objects) {
+      const canonical = schema.resolve(source.class)
+      const type = canonical ? schema.get(canonical) : undefined
+      if (!canonical || !type) throw new SessionError(`EnergyPlus ${schema.version} has no class '${source.class}'.`)
+      const name = type.anon ? '' : source.name.trim()
+      if (!type.anon && type.nreq && !name) throw new SessionError(`${canonical} needs a name.`)
+      const values: string[] = []
+      if (!type.anon && name) values[0] = name
+      const indices = new Set<number>()
+      for (const field of source.fields) {
+        if (!Number.isInteger(field.index) || field.index < 0 || !slotAt(type, field.index)) {
+          throw new SessionError(`${canonical} has no field at index ${field.index}.`)
+        }
+        if (indices.has(field.index)) throw new SessionError(`${canonical} import contains field ${field.index} more than once.`)
+        indices.add(field.index)
+        if (field.index === 0 && !type.anon) {
+          if (field.value.trim().toLowerCase() !== name.toLowerCase()) {
+            throw new SessionError(`${canonical} import name does not match its first field.`)
+          }
+          continue
+        }
+        const slot = slotAt(type, field.index)!
+        const problem = valueProblem(slot.def, field.value)
+        if (problem) throw new SessionError(`${canonical} ${displayName(slot)} ${problem}.`)
+        while (values.length <= field.index) values.push('')
+        values[field.index] = field.value
+      }
+      const missing = (type.r ?? []).filter((key) => {
+        const index = type.f.indexOf(key)
+        return index >= 0 && !(values[index] ?? '').trim()
+      })
+      if (missing.length) throw new SessionError(`${canonical} import is missing required fields: ${missing.join(', ')}.`)
+      while (values.at(-1) === '') values.pop()
+
+      const classObjects = (o.doc.byClass.get(canonical.toLowerCase()) ?? [])
+        .map((id) => o.doc.objects.get(id)!)
+      const existing = type.s
+        ? classObjects
+        : !type.anon && name
+          ? classObjects.filter((obj) => obj.fields[0]?.value.trim().toLowerCase() === name.toLowerCase())
+          : []
+      if (existing.length > 1) throw new SessionError(`${canonical}${name ? ` '${name}'` : ''} is ambiguous in the open model.`)
+      if (existing.length === 1) {
+        const currentValues = existing[0]!.fields.map((field) => field.value)
+        if (!sameValues(values, currentValues, !type.anon)) {
+          throw new SessionError(`${canonical}${name ? ` '${name}'` : ''} already exists with different fields; nothing was imported.`)
+        }
+        alreadyPresent.push(`${canonical}${name ? ` '${name}'` : ''}`)
+        continue
+      }
+      if (name) this.assertNameFree(canonical, type, name)
+      const identity = `${canonical.toLowerCase()}\0${name.toLowerCase()}`
+      if (name) {
+        const previous = seenIncoming.get(identity)
+        if (previous) {
+          if (!sameValues(values, previous)) throw new SessionError(`${canonical} '${name}' occurs with conflicting definitions in the import plan.`)
+          alreadyPresent.push(`${canonical} '${name}'`)
+          continue
+        }
+        seenIncoming.set(identity, values)
+      }
+      prepared.push({ className: canonical, name, type, values })
+    }
+
+    for (let i = 0; i < prepared.length; i++) {
+      const current = prepared[i]!
+      if (!current.name) continue
+      const currentLists = new Set(current.type.nref ?? [])
+      for (let j = 0; j < i; j++) {
+        const previous = prepared[j]!
+        if (previous.name.toLowerCase() !== current.name.toLowerCase()) continue
+        if (previous.className.toLowerCase() === current.className.toLowerCase() ||
+          (previous.type.nref ?? []).some((list) => currentLists.has(list))) {
+          throw new SessionError(`DataSet objects ${previous.className} and ${current.className} share the name '${current.name}' in EnergyPlus reference lists; nothing was imported.`)
+        }
+      }
+    }
+
+    const classesByReference = new Map<string, Set<string>>()
+    for (const className of schema.typeNames) {
+      const type = schema.get(className)
+      for (const list of type?.nref ?? []) {
+        const classes = classesByReference.get(list.toLowerCase()) ?? new Set<string>()
+        classes.add(className.toLowerCase())
+        classesByReference.set(list.toLowerCase(), classes)
+      }
+    }
+    const unresolved: string[] = []
+    for (const source of prepared) {
+      for (let index = 0; index < source.values.length; index++) {
+        const slot = slotAt(source.type, index)
+        const name = source.values[index]?.trim() ?? ''
+        if (!name || !slot?.def?.ol?.length) continue
+        const allowed = new Set(slot.def.ol.flatMap((list) => [...(classesByReference.get(list.toLowerCase()) ?? [])]))
+        const matches = new Set<string>()
+        for (const existing of o.doc.objects.values()) {
+          if (allowed.has(existing.className.toLowerCase()) &&
+            existing.fields[0]?.value.trim().toLowerCase() === name.toLowerCase()) matches.add(`existing:${existing.id}`)
+        }
+        for (let i = 0; i < prepared.length; i++) {
+          const target = prepared[i]!
+          if (allowed.has(target.className.toLowerCase()) && target.name.toLowerCase() === name.toLowerCase()) {
+            matches.add(`incoming:${i}`)
+          }
+        }
+        if (matches.size !== 1) {
+          unresolved.push(`${source.className} '${source.name}' field '${slot.key}' -> '${name}' (${matches.size ? 'ambiguous' : 'not found in the open model or import plan'})`)
+        }
+      }
+    }
+    if (unresolved.length) {
+      throw new SessionError(`Cannot import: resolve these IDD references first: ${unresolved.slice(0, 12).join('; ')}${unresolved.length > 12 ? `; and ${unresolved.length - 12} more` : ''}. Nothing was imported.`)
+    }
+    if (!prepared.length) return { imported: [], alreadyPresent, note: 'All planned objects already exist with matching fields.' }
+
+    const imported: string[] = []
+    o.history.transact(undoLabel, () => {
+      for (const item of prepared) {
+        const id = createObject(o.doc, item.className, item.values)
+        this.labelFields(id)
+        imported.push(`${item.className}${item.name ? ` '${item.name}'` : ''}`)
+      }
+    })
+    this.rebuild()
+    return { imported, alreadyPresent, count: imported.length, undoLabel: o.history.undoLabel }
+  }
+
   // --- simulation settings, loads, outputs ------------------------------------------
 
   /** Time step, run periods, SimulationControl, location and design days, as the file has them. */
@@ -509,6 +1317,150 @@ export class ModelSession {
       location: location ? this.fieldsByKey(location) : null,
       designDays: all('SizingPeriod:DesignDay').map((o) => o.fields[0]?.value ?? ''),
     }
+  }
+
+  /** Add a complete, idealized zone HVAC configuration as one undoable edit. */
+  addIdealLoads(args: { zone: string; heatingSetpoint?: number; coolingSetpoint?: number }): { zone: string; created: string[] } {
+    const o = this.need()
+    const schema = this.needSchema()
+    const zone = this.listZones().find((z) => z.name.trim().toLowerCase() === args.zone.trim().toLowerCase())
+    if (!zone) throw new SessionError(`No zone named '${args.zone}'. Call list_zones to see the zone names.`)
+    const heatingSetpoint = args.heatingSetpoint ?? 20
+    const coolingSetpoint = args.coolingSetpoint ?? 24
+    if (!Number.isFinite(heatingSetpoint) || !Number.isFinite(coolingSetpoint) || heatingSetpoint >= coolingSetpoint) {
+      throw new SessionError('Heating setpoint must be a finite temperature below the finite cooling setpoint.')
+    }
+
+    const objects = (className: string): IdfObject[] =>
+      (o.doc.byClass.get(className.toLowerCase()) ?? []).map((id) => o.doc.objects.get(id)!)
+    const target = zone.name.trim().toLowerCase()
+    const connections = objects('ZoneHVAC:EquipmentConnections')
+    if (connections.some((obj) => obj.fields[0]?.value.trim().toLowerCase() === target)) {
+      throw new SessionError(`Zone '${zone.name}' already has HVAC equipment connections; this helper only adds ideal loads to an unequipped zone.`)
+    }
+    const zoneLists = new Map(
+      objects('ZoneList').map((obj) => [
+        obj.fields[0]?.value.trim().toLowerCase() ?? '',
+        new Set(obj.fields.slice(1).map((field) => field.value.trim().toLowerCase()).filter(Boolean)),
+      ]),
+    )
+    const thermostatType = schema.get('ZoneControl:Thermostat')
+    const controlledZoneIndex = thermostatType?.f.indexOf('zone_or_zonelist_name') ?? -1
+    if (
+      objects('ZoneControl:Thermostat').some((obj) => {
+        const controlled = obj.fields[controlledZoneIndex]?.value.trim().toLowerCase() ?? ''
+        return controlled === target || zoneLists.get(controlled)?.has(target) === true
+      })
+    ) {
+      throw new SessionError(`Zone '${zone.name}' already has a thermostat; this helper does not replace existing controls.`)
+    }
+
+    const usedNames = new Set(
+      [...o.doc.objects.values()].map((obj) => obj.fields[0]?.value.trim().toLowerCase()).filter(Boolean),
+    )
+    const name = (base: string): string => {
+      let candidate = base
+      let suffix = 2
+      while (usedNames.has(candidate.toLowerCase())) candidate = `${base} ${suffix++}`
+      usedNames.add(candidate.toLowerCase())
+      return candidate
+    }
+    const prefix = `Cartes ${zone.name}`
+    const names = {
+      availability: name(`${prefix} Ideal Loads Availability`),
+      controlSchedule: name(`${prefix} Thermostat Control`),
+      heatingSchedule: name(`${prefix} Heating Setpoint`),
+      coolingSchedule: name(`${prefix} Cooling Setpoint`),
+      dualSetpoint: name(`${prefix} Dual Setpoint`),
+      thermostat: name(`${prefix} Thermostat`),
+      equipment: name(`${prefix} Equipment`),
+      idealLoads: name(`${prefix} Ideal Loads`),
+      supplyNode: name(`${prefix} Supply Node`),
+      airNode: name(`${prefix} Zone Air Node`),
+      returnNode: name(`${prefix} Return Node`),
+    }
+    const planned: Array<{ className: string; values: string[]; objectName?: string | undefined }> = []
+    const add = (className: string, fields: Record<string, string>, groups: Array<Record<string, string>> = []): void => {
+      const canonical = schema.resolve(className)
+      const type = canonical ? schema.get(canonical) : undefined
+      if (!canonical || !type) throw new SessionError(`EnergyPlus ${schema.version} has no class '${className}'.`)
+      const values = Array(type.f.length).fill('') as string[]
+      for (const [field, value] of Object.entries(fields)) {
+        const index = type.f.findIndex((key) => key.toLowerCase() === field.toLowerCase())
+        if (index < 0) throw new SessionError(`${canonical} has no field '${field}'.`)
+        const problem = valueProblem(type.p[type.f[index]!], value)
+        if (problem) throw new SessionError(`${canonical} ${field} ${problem}.`)
+        values[index] = value
+      }
+      for (const required of type.r ?? []) {
+        const index = type.f.indexOf(required)
+        if (index >= 0 && !values[index]?.trim()) throw new SessionError(`${canonical} requires '${required}'.`)
+      }
+      if (groups.length && !type.x) throw new SessionError(`${canonical} has no repeating fields.`)
+      for (const group of groups) {
+        for (const field of type.x!.fields) {
+          const value = group[field] ?? ''
+          const problem = valueProblem(type.x!.p[field], value)
+          if (problem) throw new SessionError(`${canonical} ${field} ${problem}.`)
+          values.push(value)
+        }
+      }
+      while (values.length > type.f.length && values[values.length - 1] === '') values.pop()
+      while (values.length > 0 && values[values.length - 1] === '') values.pop()
+      planned.push({ className: canonical, values, ...(fields.name ? { objectName: fields.name } : {}) })
+    }
+
+    add('Schedule:Constant', { name: names.availability, hourly_value: '1' })
+    add('Schedule:Constant', { name: names.controlSchedule, hourly_value: '4' })
+    add('Schedule:Constant', { name: names.heatingSchedule, hourly_value: String(heatingSetpoint) })
+    add('Schedule:Constant', { name: names.coolingSchedule, hourly_value: String(coolingSetpoint) })
+    add('ThermostatSetpoint:DualSetpoint', {
+      name: names.dualSetpoint,
+      heating_setpoint_temperature_schedule_name: names.heatingSchedule,
+      cooling_setpoint_temperature_schedule_name: names.coolingSchedule,
+    })
+    add('ZoneControl:Thermostat', {
+      name: names.thermostat,
+      zone_or_zonelist_name: zone.name,
+      control_type_schedule_name: names.controlSchedule,
+      control_1_object_type: 'ThermostatSetpoint:DualSetpoint',
+      control_1_name: names.dualSetpoint,
+    })
+    add('ZoneHVAC:IdealLoadsAirSystem', {
+      name: names.idealLoads,
+      availability_schedule_name: names.availability,
+      zone_supply_air_node_name: names.supplyNode,
+    })
+    add(
+      'ZoneHVAC:EquipmentList',
+      { name: names.equipment, load_distribution_scheme: 'SequentialLoad' },
+      [
+        {
+          zone_equipment_object_type: 'ZoneHVAC:IdealLoadsAirSystem',
+          zone_equipment_name: names.idealLoads,
+          zone_equipment_cooling_sequence: '1',
+          zone_equipment_heating_or_no_load_sequence: '1',
+        },
+      ],
+    )
+    add('ZoneHVAC:EquipmentConnections', {
+      zone_name: zone.name,
+      zone_conditioning_equipment_list_name: names.equipment,
+      zone_air_inlet_node_or_nodelist_name: names.supplyNode,
+      zone_air_node_name: names.airNode,
+      zone_return_air_node_or_nodelist_name: names.returnNode,
+    })
+
+    const created: string[] = []
+    o.history.transact('Add ideal loads', () => {
+      for (const item of planned) {
+        const id = createObject(o.doc, item.className, item.values)
+        this.labelFields(id)
+        created.push(item.objectName ? `${item.className} '${item.objectName}'` : `${item.className} for '${zone.name}'`)
+      }
+    })
+    this.rebuild()
+    return { zone: zone.name, created }
   }
 
   /**

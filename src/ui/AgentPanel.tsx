@@ -5,6 +5,8 @@
 import { useEffect, useRef, useState } from 'react'
 import { PROVIDERS } from '../agent/settings.js'
 import type { ApprovalRequest } from '../agent/tools.js'
+import type { ComparisonChart } from '../simulate/scenarios.js'
+import type { SeriesChart } from '../results/index.js'
 import type { Agent, AssistantPart, ToolPart } from './useAgent.js'
 import { AgentIcon } from './icons.js'
 
@@ -160,11 +162,12 @@ function ToolCard({
           ? 'declined'
           : 'done'
   const code = part.name === 'run_python' ? (part.input as { code?: string } | undefined)?.code : undefined
+  const charts = ['run_scenarios', 'plot_timeseries'].includes(part.name) ? resultCharts(part.output) : []
 
   return (
     <details
       className={`agent-tool agent-tool--${status}${approval?.kind === 'destructive' ? ' agent-tool--destructive' : ''}`}
-      open={approval !== undefined || undefined}
+      open={approval !== undefined || charts.length > 0 || undefined}
     >
       <summary>
         <span className="agent-tool__name">{part.name}</span>
@@ -184,8 +187,62 @@ function ToolCard({
         </div>
       )}
       {part.error && <pre className="agent-tool__error">{part.error}</pre>}
-      {part.output !== undefined && <pre className="agent-tool__json agent-tool__output">{pretty(part.output)}</pre>}
+      {charts.map((chart) => (
+        <figure className="agent-tool__chart" key={chart.title}>
+          <figcaption>{chart.title} ({chart.units})</figcaption>
+          {chart.kind === 'bar' ? chart.points.map((point) => (
+            <div className="agent-tool__chart-row" key={point.label}>
+              <span>{point.label}</span>
+              <meter min={0} max={Math.max(...chart.points.map((item) => item.value)) || 1} value={point.value} aria-label={`${point.label}: ${point.value} ${chart.units}`} />
+              <span>{point.value.toLocaleString()}</span>
+            </div>
+          )) : <LineChart chart={chart} />}
+        </figure>
+      ))}
+      {part.output !== undefined && (charts.length
+        ? <details className="agent-tool__data"><summary>Data and details</summary><pre className="agent-tool__json agent-tool__output">{pretty(part.output)}</pre></details>
+        : <pre className="agent-tool__json agent-tool__output">{pretty(part.output)}</pre>)}
     </details>
+  )
+}
+
+function resultCharts(output: unknown): Array<ComparisonChart | SeriesChart> {
+  if (!output || typeof output !== 'object' || !('charts' in output) || !Array.isArray(output.charts)) return []
+  return output.charts.filter((chart): chart is ComparisonChart | SeriesChart =>
+    chart && typeof chart === 'object' && typeof chart.title === 'string' && typeof chart.units === 'string' &&
+    (chart.kind === 'bar' || chart.kind === 'line') &&
+    Array.isArray(chart.points) && chart.points.length >= (chart.kind === 'bar' ? 2 : 1) &&
+    chart.points.length <= (chart.kind === 'bar' ? 6 : 48) &&
+    chart.points.every((point: unknown) =>
+      point && typeof point === 'object' && 'label' in point && typeof point.label === 'string' &&
+      'value' in point && typeof point.value === 'number' && Number.isFinite(point.value) &&
+      (chart.kind !== 'bar' || point.value >= 0)),
+  )
+}
+
+function LineChart({ chart }: { chart: SeriesChart }): React.JSX.Element {
+  const values = chart.points.map((point) => point.value)
+  const min = Math.min(...values)
+  const max = Math.max(...values)
+  const position = (index: number, value: number): [number, number] => [
+    chart.points.length === 1 ? 150 : 5 + index * 290 / (chart.points.length - 1),
+    min === max ? 50 : 95 - (value - min) * 90 / (max - min),
+  ]
+  const positions = chart.points.map((point, index) => position(index, point.value))
+  return (
+    <>
+      <svg className="agent-tool__line-chart" viewBox="0 0 300 100" role="img"
+        aria-label={`${chart.title}: ${chart.points.length} equally spaced points, from ${min} to ${max} ${chart.units}`}>
+        <polyline points={positions.map(([x, y]) => `${x},${y}`).join(' ')} fill="none" stroke="currentColor" strokeWidth="2" />
+        {positions.length === 1 && <circle cx={positions[0]![0]} cy={positions[0]![1]} r="3" fill="currentColor" />}
+      </svg>
+      <div className="agent-tool__chart-axis">
+        <span>{chart.points[0]!.label}</span>
+        <span>{min}–{max} {chart.units}</span>
+        <span>{chart.points[chart.points.length - 1]!.label}</span>
+      </div>
+      <div>Points are equally spaced; see Data and details for values.</div>
+    </>
   )
 }
 

@@ -1191,6 +1191,14 @@ export function App(): React.JSX.Element {
         note: 'Read results with results_summary, get_report_table and get_timeseries; the files are in `last_run` for run_python.',
       }
     },
+    runScenarios: async (scenarios, modelName, signal) => ({
+      ...await simulation.runScenarios(scenarios, modelName, signal),
+      weather: simulation.epw?.name ?? 'none (design days only)',
+    }),
+    readTimeseries: (args) => {
+      simulation.loadEngine()
+      return sharedSimulationClient().readTimeseries(args)
+    },
     queryResults: (sql, params) => queryOverPython((code) => agentBridge.current.runPython(code), sql, params),
     outputText: (name) => {
       const bytes = simulation.result?.outputs[name]
@@ -1439,7 +1447,7 @@ export function App(): React.JSX.Element {
         </div>
 
         {/* Right Drawer: Inspector, Validation and Matching under Geometry; Simulate and Python under Simulate; Chat under Agent */}
-        {showRightPanel && (loaded || rightTab === 'python' || rightTab === 'chat') && (
+        {showRightPanel && (loaded || rightTab === 'simulate' || rightTab === 'python' || rightTab === 'chat') && (
           <aside className="right-panel">
             <div className="right-panel__tabs">
               {(ribbonTab === 'agent'
@@ -1450,12 +1458,10 @@ export function App(): React.JSX.Element {
                     ['validation', `Validation (${(validation?.issues.length ?? 0) + fieldIssues.length})`],
                     ['matching', `Matching (${matchReport?.proposals.length ?? 0})`],
                   ] as const)
-                : loaded
-                  ? ([
-                      ['simulate', 'Simulate'],
-                      ['python', 'Python'],
-                    ] as const)
-                  : ([['python', 'Python']] as const)
+                : ([
+                    ['simulate', 'Simulate'],
+                    ['python', 'Python'],
+                  ] as const)
               ).map(([tab, label]) => (
                 <button
                   key={tab}
@@ -1473,9 +1479,9 @@ export function App(): React.JSX.Element {
                 <AgentPanel agent={agent} hasModel={loaded !== undefined} />
               ) : rightTab === 'python' ? (
                 <PythonPanel simulation={simulation} repl={python} />
-              ) : !loaded ? null : rightTab === 'simulate' ? (
-                <SimulatePanel simulation={simulation} idfVersion={loaded.model.versionResolution.declared} />
-              ) : rightTab === 'matching' && matchReport ? (
+              ) : rightTab === 'simulate' ? (
+                <SimulatePanel simulation={simulation} idfVersion={loaded?.model.versionResolution.declared} hasModel={loaded !== undefined} />
+              ) : !loaded ? null : rightTab === 'matching' && matchReport ? (
                 <MatchPanel
                   model={loaded.model}
                   report={matchReport}

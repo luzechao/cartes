@@ -118,6 +118,9 @@ export async function createEngine({ indexURL, readAsset, onLog }: EngineOptions
   return {
     info,
     async run(request) {
+      pyodide.runPython('_cartes_ns["last_run"] = None')
+      lastRun?.dispose()
+      lastRun = undefined
       if (request.packages?.length) {
         const errors: string[] = []
         await pyodide.loadPackage(request.packages, { messageCallback: () => {}, errorCallback: (m) => errors.push(m) })
@@ -125,8 +128,6 @@ export async function createEngine({ indexURL, readAsset, onLog }: EngineOptions
       }
       // Without weather, EnergyPlus can only simulate the model's design days.
       const args = request.epw === undefined ? ['-D'] : []
-      lastRun?.dispose()
-      lastRun = undefined
       const t0 = performance.now()
       const run = runEnergyPlus(pyodide, {
         idf: request.idf,

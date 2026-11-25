@@ -1,7 +1,7 @@
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterAll, describe, expect, it } from 'vitest'
+import { afterAll, describe, expect, it, vi } from 'vitest'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import { createCartesServer } from '../../src/mcp/server.js'
@@ -43,34 +43,56 @@ describe('MCP server', () => {
     const { tools } = await client.listTools()
     expect(tools.map((t) => t.name).sort()).toEqual(
       [
+        'add_ideal_loads',
         'add_object',
         'add_outputs',
         'add_opening',
         'apply_matches',
+        'check_readiness',
         'convert_simplified',
+        'dataset_library',
         'delete_surface',
         'describe_class',
+        'diagnose_energyplus_errors',
         'diff',
         'duplicate_object',
+        'example_library',
+        'import_dataset',
         'extrude_zone',
         'find_classes',
+        'find_objects',
+        'get_field_reference',
+        'get_skill',
         'get_simulation_settings',
         'inspect',
+        'inspect_schedule',
+        'inspect_hvac_topology',
         'inspect_loads',
+        'inspect_loop_structure',
+        'inspect_parameter',
         'list_objects',
+        'list_skills',
         'list_surfaces',
         'list_zones',
         'move_zone',
         'new_model',
         'open_idf',
         'propose_matches',
+        'read_manual_section',
         'redo',
         'remove_object',
         'rename_object',
         'save_idf',
+        'scale_compact_schedule',
+        'search_reference',
         'scale_loads',
         'set_simulation_settings',
+        'set_constant_schedule',
+        'set_dual_setpoints',
         'set_field',
+        'set_glazing_optics',
+        'set_hourly_schedule',
+        'set_parameter',
         'summary',
         'undo',
         'update_object',
@@ -80,6 +102,113 @@ describe('MCP server', () => {
     for (const t of tools) expect(t.description, t.name).toBeTruthy()
     const extrude = tools.find((t) => t.name === 'extrude_zone')!
     expect(extrude.inputSchema.required).toEqual(expect.arrayContaining(['name', 'footprint', 'height']))
+  })
+
+  it('reports readiness checks without pretending the IDF contains weather selection', async () => {
+    const client = await connect()
+    await call(client, 'new_model')
+    const report = (await call(client, 'check_readiness')).json()
+    expect(report.model).toMatchObject({ zones: 0, surfaces: 0 })
+    expect(report.validation).toMatchObject({ errors: 0, warnings: 0, omitted: 0 })
+    expect(report.checks).toMatchObject({
+      siteLocation: { present: true },
+      designDays: { count: 2 },
+      zones: { count: 0, withoutFloorArea: [] },
+      weatherFile: { status: 'host-managed' },
+    })
+  })
+
+  it('searches the pinned DataSets catalog over MCP without a model', async () => {
+    const client = await connect()
+    const result = await call(client, 'dataset_library', { action: 'search', query: 'boilers' })
+    expect(result.isError, result.text).toBe(false)
+    expect(result.json()).toMatchObject({ results: [expect.objectContaining({ file: 'Boilers.idf', version: '26.1.0' })] })
+    const invalid = await call(client, 'dataset_library', { action: 'get_objects', dataset: '../outside.idf', class: 'Boiler:HotWater' })
+    expect(invalid.isError).toBe(true)
+    const importWithoutModel = await call(client, 'import_dataset', {
+      dataset: 'Boilers.idf', class: 'Material', name: 'Brick',
+    })
+    expect(importWithoutModel.isError).toBe(true)
+    expect(importWithoutModel.text).toContain('No model')
+  })
+
+  it('returns candidate HVAC flow directions through MCP', async () => {
+    const client = await connect()
+    await call(client, 'open_idf', { path: 'public/examples/5ZoneAirCooled.idf' })
+    const result = await call(client, 'inspect_hvac_topology', { limit: 1000 })
+    expect(result.isError, result.text).toBe(false)
+    expect(result.json().directedConnections).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        node: 'Main Heating Coil 1 Outlet Node',
+        from: expect.objectContaining({ name: 'Main Heating Coil 1', direction: 'outlet' }),
+        to: expect.objectContaining({ name: 'Supply Fan 1', direction: 'inlet' }),
+      }),
+    ]))
+  })
+
+  it('searches and inspects bundled examples without replacing the open model', async () => {
+    const client = await connect()
+    await call(client, 'new_model')
+    const found = (await call(client, 'example_library', { action: 'search', class: 'People' })).json()
+    expect(found.results).toEqual(expect.arrayContaining([expect.objectContaining({ id: '5zone' })]))
+    const details = (await call(client, 'example_library', { action: 'get_objects', example: '5zone', class: 'People', limit: 1 })).json()
+    expect(details.results[0].objects).toHaveLength(1)
+    expect(details.results[0].dependencies.length).toBeGreaterThan(0)
+    expect((await call(client, 'summary')).json().name).toBe('untitled.idf')
+    expect((await call(client, 'example_library', { action: 'get_objects', example: 'missing', class: 'People' })).isError).toBe(true)
+  })
+
+  it('searches the pinned catalog and downloads only a selected example', async () => {
+    const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('Version, 26.1; Zone, Sample;', { status: 200 }))
+    try {
+      const client = await connect()
+      const search = await call(client, 'example_library', { action: 'search', query: '1ZoneUncontrolled', class: 'Zone', limit: 1 })
+      expect(search.json().results[0]).toMatchObject({ id: '1ZoneUncontrolled.idf', version: '26.1.0', source: 'github' })
+      expect(fetch).not.toHaveBeenCalled()
+      const detail = await call(client, 'example_library', { action: 'get_objects', example: '1ZoneUncontrolled.idf', class: 'Zone' })
+      expect(detail.isError, detail.text).toBe(false)
+      expect(detail.json().results[0]).toMatchObject({ total: 1, objects: [expect.objectContaining({ name: 'Sample' })] })
+      expect(fetch).toHaveBeenCalledOnce()
+    } finally {
+      fetch.mockRestore()
+    }
+  })
+
+  it('offers diagnosis and example-learning procedures', async () => {
+    const client = await connect()
+    const list = (await call(client, 'list_skills')).json()
+    expect(list.map((item: { name: string }) => item.name)).toEqual(expect.arrayContaining(['diagnose-simulation-errors', 'learn-from-examples']))
+    const skill = (await call(client, 'get_skill', { name: 'diagnose-simulation-errors' })).json()
+    expect(skill.steps.join(' ')).toContain('first severe')
+  })
+
+  it('returns a fetched manual section through MCP', async () => {
+    const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(
+      '<h2 id="windowmaterialsimpleglazingsystem">Simple glazing</h2><p>Documentation text.</p><h2>Next</h2>',
+      { status: 200 },
+    ))
+    try {
+      const client = await connect()
+      await call(client, 'new_model')
+      const result = await call(client, 'read_manual_section', { class: 'WindowMaterial:SimpleGlazingSystem' })
+      expect(result.isError, result.text).toBe(false)
+      expect(result.json().text).toContain('Documentation text.')
+      expect(fetch).toHaveBeenCalledOnce()
+    } finally {
+      fetch.mockRestore()
+    }
+  })
+
+  it('adds ideal loads through MCP and validates the resulting model', async () => {
+    const client = await connect()
+    await call(client, 'new_model')
+    await call(client, 'extrude_zone', { name: 'Office', footprint: [[0, 0], [6, 0], [6, 4], [0, 4]], height: 3 })
+    const added = await call(client, 'add_ideal_loads', { zone: 'Office', heating_setpoint: 19, cooling_setpoint: 25 })
+    expect(added.isError, added.text).toBe(false)
+    expect(added.json()).toMatchObject({ zone: 'Office', created: expect.arrayContaining(["ZoneHVAC:IdealLoadsAirSystem 'Cartes Office Ideal Loads'"]) })
+    expect((await call(client, 'inspect', { name: 'Cartes Office Heating Setpoint' })).json().fields.at(-1).value).toBe('19')
+    expect((await call(client, 'inspect', { name: 'Cartes Office Cooling Setpoint' })).json().fields.at(-1).value).toBe('25')
+    expect((await call(client, 'validate')).json()).toEqual([])
   })
 
   it('refuses usefully: no model open, a window that does not fit, a bad path', async () => {

@@ -10,6 +10,7 @@
  */
 import { z } from 'zod'
 import type { ModelSession } from './session.js'
+import { diagnoseEnergyPlusErrors, skills } from './skills.js'
 
 /**
  * - `read` never changes the model.
@@ -28,7 +29,7 @@ export interface SessionTool<S extends z.ZodRawShape = z.ZodRawShape> {
   mcpOnly?: boolean
   /** Needs the schema's field notes and class memos loaded (`prepare({ prose: true })`). */
   prose?: boolean
-  run: (session: ModelSession, args: z.objectOutputType<S, z.ZodTypeAny>) => unknown
+  run: (session: ModelSession, args: z.output<z.ZodObject<S>>) => unknown
 }
 
 function define<S extends z.ZodRawShape>(tool: SessionTool<S>): SessionTool {
@@ -38,8 +39,34 @@ function define<S extends z.ZodRawShape>(tool: SessionTool<S>): SessionTool {
 const point = z.tuple([z.number(), z.number()])
 const value = z.union([z.string(), z.number()])
 const cls = z.string().optional().describe('Class of the object, when its name is shared with an object of another class.')
+export const parameter = z.enum([
+  'window_u_factor', 'window_shgc', 'cooling_cop', 'heating_cop', 'heating_efficiency', 'fan_efficiency',
+  'water_heater_efficiency', 'water_heater_on_parasitic', 'water_heater_off_parasitic',
+  'water_heater_on_loss', 'water_heater_off_loss', 'water_use_peak_flow',
+  'outdoor_air_per_person', 'outdoor_air_per_area', 'outdoor_air_per_zone',
+])
 
 export const sessionTools: SessionTool[] = [
+  define({
+    name: 'list_skills',
+    kind: 'read',
+    description: 'List the available EnergyPlus modeling and diagnosis procedures.',
+    run: () => Object.entries(skills).map(([name, skill]) => ({ name, description: skill.description })),
+  }),
+  define({
+    name: 'get_skill',
+    kind: 'read',
+    description: 'Read an EnergyPlus modeling or diagnosis procedure and its steps.',
+    input: { name: z.enum(['diagnose-simulation-errors', 'learn-from-examples']) },
+    run: (_s, a) => ({ name: a.name, ...skills[a.name] }),
+  }),
+  define({
+    name: 'diagnose_energyplus_errors',
+    kind: 'read',
+    description: 'Extract severe and fatal records from supplied EnergyPlus error text and give tentative offline investigation prompts. These are not automatic diagnoses or fixes; inspect the complete log and model.',
+    input: { text: z.string().max(80000).describe('EnergyPlus eplusout.err text or selected lines; no network request is made.') },
+    run: (_s, a) => diagnoseEnergyPlusErrors(a.text),
+  }),
   define({
     name: 'new_model',
     kind: 'destructive',
@@ -54,6 +81,14 @@ export const sessionTools: SessionTool[] = [
     kind: 'read',
     description: 'Counts, errors and warnings for the open model.',
     run: (s) => s.summary(),
+  }),
+  define({
+    name: 'check_readiness',
+    kind: 'read',
+    description:
+      'A pre-simulation snapshot: validation issues, location, design days, run periods, zones without floor area, ' +
+      'and internal load counts. Weather is managed by the host and cannot be inferred from the IDF.',
+    run: (s) => s.checkReadiness(),
   }),
   define({
     name: 'list_objects',
@@ -88,6 +123,24 @@ export const sessionTools: SessionTool[] = [
     run: (s, a) => s.describeClass(a.class),
   }),
   define({
+    name: 'search_reference',
+    kind: 'read',
+    prose: true,
+    description:
+      'Search the loaded EnergyPlus IDD class and field names, notes and memos. Returns paged matches and links to the ' +
+      'manual where available; does not search the full manuals.',
+    input: { query: z.string(), limit: z.number().int().positive().max(100).optional(), offset: z.number().int().min(0).optional() },
+    run: (s, a) => s.searchReference(a.query, a.limit, a.offset),
+  }),
+  define({
+    name: 'get_field_reference',
+    kind: 'read',
+    prose: true,
+    description: 'Get an IDD field’s full note, constraints and manual link for the loaded schema version. Does not retrieve the manual text.',
+    input: { class: z.string(), field: z.string() },
+    run: (s, a) => s.fieldReference(a.class, a.field),
+  }),
+  define({
     name: 'list_zones',
     kind: 'read',
     description: 'Every zone, with its floor area and origin.',
@@ -107,6 +160,37 @@ export const sessionTools: SessionTool[] = [
     description: 'Every field of one object of any class: index, name, value and units.',
     input: { name: z.string(), class: cls },
     run: (s, a) => s.inspect(a.name, a.class),
+  }),
+  define({
+    name: 'find_objects',
+    kind: 'read',
+    description:
+      'Find objects by class pattern (use * as a wildcard), exact whole-field name, or object-name substring. ' +
+      'Matches include fields using a NodeList containing the requested name. Text matches are evidence, not necessarily IDD-declared references.',
+    input: {
+      class_pattern: z.string().optional(),
+      name: z.string().optional(),
+      name_contains: z.string().optional(),
+      limit: z.number().int().positive().max(1000).optional(),
+    },
+    run: (s, a) => s.findObjects({ classPattern: a.class_pattern, name: a.name, nameContains: a.name_contains, limit: a.limit }),
+  }),
+  define({
+    name: 'inspect_hvac_topology',
+    kind: 'read',
+    description:
+      'List air, plant and condenser loops and model-wide node-bearing components; group shared nodes and expand NodeLists. ' +
+      'Candidate directed connections match an outlet field to an inlet field on the same node; ambiguous fields remain unknown. ' +
+      'Candidates are not validated flow paths. An optional loop selects loop fields, not components.',
+    input: { loop: z.string().optional(), limit: z.number().int().positive().max(1000).optional() },
+    run: (s, a) => s.inspectHvacTopology(a),
+  }),
+  define({
+    name: 'inspect_loop_structure',
+    kind: 'read',
+    description: 'Inspect one air, plant or condenser loop’s BranchLists, ordered branch components and splitter/mixer declarations. Compare declared component nodes with actual IDD node fields and report mismatches, plus unresolved declarations and a Mermaid branch diagram. This is not a simulation-validated flow path; air-loop demand equipment is not shown.',
+    input: { name: z.string(), class: z.enum(['AirLoopHVAC', 'PlantLoop', 'CondenserLoop']) },
+    run: (s, a) => s.inspectLoopStructure(a.name, a.class),
   }),
   define({
     name: 'validate',
@@ -264,6 +348,26 @@ export const sessionTools: SessionTool[] = [
     run: (s) => s.convertSimplified(),
   }),
   define({
+    name: 'add_ideal_loads',
+    kind: 'edit',
+    description:
+      'Add idealized heating and cooling to one zone that has no existing HVAC connections or thermostat. Creates ' +
+      'constant 20°C heating / 24°C cooling setpoints by default, schedules, thermostat, ideal-loads equipment and ' +
+      'zone connections as one undoable edit. This is idealized conditioning for load studies, not a physical HVAC ' +
+      'system or a realistic energy-use baseline.',
+    input: {
+      zone: z.string(),
+      heating_setpoint: z.number().optional().describe('Constant heating setpoint in °C; default 20.'),
+      cooling_setpoint: z.number().optional().describe('Constant cooling setpoint in °C; default 24 and must exceed heating.'),
+    },
+    run: (s, a) =>
+      s.addIdealLoads({
+        zone: a.zone,
+        ...(a.heating_setpoint !== undefined ? { heatingSetpoint: a.heating_setpoint } : {}),
+        ...(a.cooling_setpoint !== undefined ? { coolingSetpoint: a.cooling_setpoint } : {}),
+      }),
+  }),
+  define({
     name: 'get_simulation_settings',
     kind: 'read',
     description: 'Time step, run periods, SimulationControl flags, Site:Location and design-day names.',
@@ -310,6 +414,77 @@ export const sessionTools: SessionTool[] = [
       'Also every zone’s floor area.',
     input: { zone: z.string().optional() },
     run: (s, a) => s.inspectLoads(a.zone),
+  }),
+  define({
+    name: 'inspect_schedule',
+    kind: 'read',
+    description: 'Inspect a schedule, its direct references and textual mentions, and an IDD-declared reference graph through other schedules.',
+    input: { name: z.string(), class: cls },
+    run: (s, a) => s.inspectSchedule(a.name, a.class),
+  }),
+  define({
+    name: 'set_constant_schedule',
+    kind: 'edit',
+    description:
+      'Set a Schedule:Constant value, respecting its ScheduleTypeLimits. Inspect first; when it has any references or ' +
+      'textual mentions, acknowledge_shared must explicitly be true. The change affects all users of the schedule.',
+    input: { name: z.string(), value: z.number(), acknowledge_shared: z.boolean().optional() },
+    run: (s, a) => s.setConstantSchedule(a.name, a.value, a.acknowledge_shared),
+  }),
+  define({
+    name: 'scale_compact_schedule',
+    kind: 'edit',
+    description:
+      'Multiply all Until values in a Schedule:Compact by a positive factor. Requires explicit ScheduleTypeLimits; ' +
+      'refuses unsupported fields or values outside the limits, without changing anything. Inspect and acknowledge ' +
+      'all shared uses first.',
+    input: { name: z.string(), factor: z.number().positive(), acknowledge_shared: z.boolean().optional() },
+    run: (s, a) => s.scaleCompactSchedule(a.name, a.factor, a.acknowledge_shared),
+  }),
+  define({
+    name: 'set_hourly_schedule',
+    kind: 'edit',
+    description: 'Replace all 24 values of a Schedule:Day:Hourly within its ScheduleTypeLimits, atomically. Inspect the schedule and explicitly acknowledge its references and textual mentions first.',
+    input: { name: z.string(), values: z.array(z.number()).length(24), acknowledge_shared: z.boolean().optional() },
+    run: (s, a) => s.setHourlySchedule(a.name, a.values, a.acknowledge_shared),
+  }),
+  define({
+    name: 'set_dual_setpoints',
+    kind: 'edit',
+    description: 'Set both heating and cooling temperatures in °C for a ThermostatSetpoint:DualSetpoint, only when each uses a distinct Schedule:Constant. Heating must be below cooling. Inspect both schedules and explicitly acknowledge all references and textual mentions; the change affects all their users.',
+    input: { name: z.string(), heating: z.number(), cooling: z.number(), acknowledge_shared: z.boolean().optional() },
+    run: (s, a) => s.setDualSetpoints(a.name, a.heating, a.cooling, a.acknowledge_shared),
+  }),
+  define({
+    name: 'set_glazing_optics',
+    kind: 'edit',
+    description: 'Replace six user-supplied normal-incidence solar and visible transmittance/reflectance values on a WindowMaterial:Glazing using SpectralAverage. Values must be physically consistent. This is not an automatic film calculation. Inspect and acknowledge all shared uses first.',
+    input: {
+      name: z.string(),
+      solar_transmittance: z.number(), solar_front_reflectance: z.number(), solar_back_reflectance: z.number(),
+      visible_transmittance: z.number(), visible_front_reflectance: z.number(), visible_back_reflectance: z.number(),
+      acknowledge_shared: z.boolean().optional(),
+    },
+    run: (s, a) => s.setGlazingOptics(a.name, {
+      solarTransmittance: a.solar_transmittance, solarFrontReflectance: a.solar_front_reflectance, solarBackReflectance: a.solar_back_reflectance,
+      visibleTransmittance: a.visible_transmittance, visibleFrontReflectance: a.visible_front_reflectance, visibleBackReflectance: a.visible_back_reflectance,
+    }, a.acknowledge_shared),
+  }),
+  define({
+    name: 'inspect_parameter',
+    kind: 'read',
+    description: 'Inspect a supported semantic parameter and its direct references: selected glazing, coils, fans, mixed/stratified water heaters, WaterUse:Equipment peak flow, and DesignSpecification:OutdoorAir flow rates. Outdoor-air rates depend on the object’s calculation method.',
+    input: { parameter, name: z.string(), class: cls },
+    run: (s, a) => s.inspectParameter(a.parameter, a.name, a.class),
+  }),
+  define({
+    name: 'set_parameter',
+    kind: 'edit',
+    description:
+      'Set one supported semantic parameter to an absolute value in its documented units. Inspect the parameter first; ' +
+      'editing a shared object affects every use. Unsupported classes and invalid values are refused.',
+    input: { parameter, name: z.string(), value: z.number(), class: cls },
+    run: (s, a) => s.setParameter(a.parameter, a.name, a.value, a.class),
   }),
   define({
     name: 'scale_loads',

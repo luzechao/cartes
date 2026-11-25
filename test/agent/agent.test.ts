@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { simulateReadableStream, type ModelMessage } from 'ai'
 import { MockLanguageModelV4 } from 'ai/test'
-import { parseIdf } from '../../src/parser/index.js'
+import { emitIdf, parseIdf } from '../../src/parser/index.js'
 import { buildModel, EditHistory, LATEST_IDD_VERSION, newModelSource } from '../../src/model/index.js'
 import type { AttachedDocument } from '../../src/mcp/session.js'
 import { createAgentTools, limitOutput, needsApproval, type AgentHost } from '../../src/agent/tools.js'
@@ -31,6 +31,8 @@ function fakeApp(opts: { editMode?: 'ask' | 'auto'; approve?: boolean } = {}) {
     },
     runPython: async (code) => ({ ok: true, value: `ran ${code.length} chars`, stdout: '', stderr: '' }),
     runSimulation: async () => ({ exitCode: 0 }),
+    runScenarios: async () => ({ error: 'no scenario runner', weather: 'none' }),
+    readTimeseries: async () => { throw new Error('no results') },
     queryResults: async () => {
       throw new Error('no results')
     },
@@ -83,8 +85,26 @@ const exec = (tools: ReturnType<typeof createAgentTools>, name: string, input: u
 describe('agent tools', () => {
   it('offers the model tools, Python and simulation — not opening, saving or replacing the file', () => {
     const tools = createAgentTools(fakeApp().host)
-    expect(Object.keys(tools)).toEqual(expect.arrayContaining(['summary', 'list_objects', 'set_field', 'run_python', 'run_simulation']))
+    expect(Object.keys(tools)).toEqual(expect.arrayContaining(['summary', 'check_readiness', 'add_ideal_loads', 'list_objects', 'set_field', 'run_python', 'run_simulation']))
     for (const name of ['open_idf', 'save_idf', 'new_model']) expect(tools[name]).toBeUndefined()
+  })
+
+  it('gives the agent a model-readiness snapshot before simulation', async () => {
+    const out = (await exec(createAgentTools(fakeApp().host), 'check_readiness', {})) as {
+      checks: { designDays: { count: number }; weatherFile: { status: string } }
+    }
+    expect(out.checks.designDays.count).toBe(2)
+    expect(out.checks.weatherFile.status).toBe('host-managed')
+  })
+
+  it('asks before adding ideal loads to an unequipped zone', async () => {
+    const app = fakeApp()
+    const tools = createAgentTools(app.host)
+    await exec(tools, 'extrude_zone', SQUARE)
+    const result = await exec(tools, 'add_ideal_loads', { zone: 'Office' })
+    expect(result).toMatchObject({ zone: 'Office', created: expect.arrayContaining(["ZoneHVAC:IdealLoadsAirSystem 'Cartes Office Ideal Loads'"]) })
+    expect(app.approvals).toEqual(['extrude_zone', 'add_ideal_loads'])
+    expect(app.open.history.undoLabel).toBe('Agent: add ideal loads')
   })
 
   it('reads without asking', async () => {
@@ -94,6 +114,21 @@ describe('agent tools', () => {
     expect(app.approvals).toEqual([])
   })
 
+  it('searches the example catalog without network access, then fetches the selected file', async () => {
+    const fetch = vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('Version, 26.1; Zone, Sample;', { status: 200 }))
+    try {
+      const tools = createAgentTools(fakeApp().host)
+      const search = await exec(tools, 'example_library', { action: 'search', query: '1ZoneUncontrolled', class: 'Zone', limit: 1 })
+      expect(search).toMatchObject({ results: [expect.objectContaining({ id: '1ZoneUncontrolled.idf', version: '26.1.0' })] })
+      expect(fetch).not.toHaveBeenCalled()
+      const detail = await exec(tools, 'example_library', { action: 'get_objects', example: '1ZoneUncontrolled.idf', class: 'Zone' })
+      expect(detail).toMatchObject({ results: [expect.objectContaining({ total: 1, source: 'github' })] })
+      expect(fetch).toHaveBeenCalledOnce()
+    } finally {
+      fetch.mockRestore()
+    }
+  })
+
   it('asks before an edit, and a refusal changes nothing', async () => {
     const app = fakeApp({ approve: false })
     const out = await exec(createAgentTools(app.host), 'extrude_zone', SQUARE)
@@ -101,6 +136,104 @@ describe('agent tools', () => {
     expect(app.approvals).toEqual(['extrude_zone'])
     expect(app.open.model.zones.size).toBe(0)
     expect(app.open.history.canUndo).toBe(false)
+  })
+
+  it('requires approval for semantic parameter edits', async () => {
+    const app = fakeApp({ approve: false })
+    const result = await exec(createAgentTools(app.host), 'set_parameter', {
+      parameter: 'window_u_factor', name: 'Example glazing', value: 1.5,
+    })
+    expect(result).toMatchObject({ rejected: true })
+    expect(app.approvals).toEqual(['set_parameter'])
+    expect(app.open.history.canUndo).toBe(false)
+  })
+
+  it('approves dual setpoint changes as one undoable agent edit', async () => {
+    const app = fakeApp()
+    const text = `Version,26.1;
+Schedule:Constant,Heat,,20;
+Schedule:Constant,Cool,,24;
+ThermostatSetpoint:DualSetpoint,Control,Heat,Cool;`
+    app.open.doc = parseIdf(text)
+    app.open.original = text
+    app.open.model = buildModel(app.open.doc)
+    app.open.history = new EditHistory(app.open.doc)
+    const result = await exec(createAgentTools(app.host), 'set_dual_setpoints', {
+      name: 'Control', heating: 21, cooling: 25, acknowledge_shared: true,
+    })
+    expect(result).toMatchObject({ changed: 2 })
+    expect(app.approvals).toEqual(['set_dual_setpoints'])
+    expect(app.open.history.undoCount).toBe(1)
+    expect(app.open.history.undoLabel).toBe('Agent: set dual setpoints')
+    app.open.history.undo()
+    expect(emitIdf(app.open.doc)).toBe(text)
+  })
+
+  it('prepares scenario copies without changing the open model and reports comparison charts', async () => {
+    const app = fakeApp()
+    const text = 'Version,26.1; WindowMaterial:SimpleGlazingSystem,Glazing,2.5,0.4;'
+    app.open.doc = parseIdf(text)
+    app.open.original = text
+    app.open.model = buildModel(app.open.doc)
+    app.open.history = new EditHistory(app.open.doc)
+    const run = vi.fn<AgentHost['runScenarios']>(async () => ({
+      weather: 'Chicago.epw',
+      result: {
+        stopped: false,
+        lastOutcome: { exitCode: 0, summary: undefined, messages: [], outputs: { 'secret.sql': new Uint8Array([73, 84]) }, args: [], seconds: 1 },
+        scenarios: [
+          { name: 'Baseline', status: 'completed' as const, retained: true, results: { environments: ['RUN'], siteEnergy: { gj: 1, kwh: 277.8 } } },
+          { name: 'Efficient', status: 'completed' as const, results: { environments: ['RUN'], siteEnergy: { gj: 0.8, kwh: 222.2 } } },
+        ],
+      },
+    }))
+    app.host.runScenarios = run
+    const tools = createAgentTools(app.host)
+    const scenarios = [
+      { name: 'Baseline', changes: [] },
+      { name: 'Efficient', changes: [{ type: 'parameter', parameter: 'window_u_factor', name: 'Glazing', value: 1.5 }] },
+    ]
+    const result = await exec(tools, 'run_scenarios', { scenarios })
+    expect(result).toMatchObject({ weather: 'Chicago.epw', charts: [expect.objectContaining({ title: 'Site energy' })] })
+    expect(result).toMatchObject({ scenarios: [expect.objectContaining({ retained: true }), expect.anything()] })
+    expect(JSON.stringify(result)).not.toContain('secret.sql')
+    const copies = run.mock.calls[0]![0]
+    expect(copies[0]!.idf).toContain('2.5')
+    expect(copies[1]!.idf).toContain('1.5')
+    expect(copies.every((copy) => copy.idf.includes('Output:SQLite'))).toBe(true)
+    expect(emitIdf(app.open.doc)).toBe(text)
+    expect(app.open.history.canUndo).toBe(false)
+    expect(app.approvals).toEqual([])
+    const invalid = await exec(tools, 'run_scenarios', { scenarios: [
+      scenarios[0], { name: 'Invalid', changes: [{ type: 'parameter', parameter: 'window_u_factor', name: 'Glazing', value: -1 }] },
+    ] })
+    expect(invalid).toMatchObject({ error: expect.stringContaining('greater than') })
+    expect(run).toHaveBeenCalledOnce()
+    const duplicate = await exec(tools, 'run_scenarios', { scenarios: [
+      { name: 'Same', changes: [] }, { name: 'same', changes: [] },
+    ] })
+    expect(duplicate).toMatchObject({ error: expect.stringContaining('distinct') })
+    app.open.doc = parseIdf(`${text} PythonPlugin:Instance,Plugin,Yes,module,Class;`)
+    const plugin = await exec(tools, 'run_scenarios', { scenarios })
+    expect(plugin).toMatchObject({ error: expect.stringContaining('PythonPlugin:Instance') })
+    expect(run).toHaveBeenCalledOnce()
+  })
+
+  it('plots one available time series and requires a key when several match', async () => {
+    const app = fakeApp()
+    app.host.readTimeseries = async () => [{
+      name: 'Outdoor temperature', key: 'Environment', units: 'C', frequency: 'Hourly', aggregation: 'Avg',
+      count: 2, min: { value: -5, at: '01-01 01:00' }, max: { value: 3, at: '01-01 02:00' }, mean: -1,
+      values: [{ at: '01-01 01:00', value: -5 }, { at: '01-01 02:00', value: 3 }],
+    }]
+    const tools = createAgentTools(app.host)
+    expect(await exec(tools, 'plot_timeseries', { name: 'Outdoor temperature' })).toMatchObject({
+      charts: [{ kind: 'line', points: [{ value: -5 }, { value: 3 }] }],
+      note: expect.stringContaining('timestamps omit the year'),
+    })
+    const original = app.host.readTimeseries
+    app.host.readTimeseries = async (args) => [...await original(args), ...await original(args)]
+    expect(await exec(tools, 'plot_timeseries', { name: 'Outdoor temperature' })).toMatchObject({ error: expect.stringContaining('supply a key') })
   })
 
   it('applies an approved edit to the app’s document as one undo step', async () => {
@@ -191,6 +324,14 @@ describe('agent turn', () => {
 })
 
 describe('agent settings', () => {
+  it('teaches QA/QC and evidence-based simulation troubleshooting', () => {
+    const instructions = buildInstructions({ modelName: 'test.idf', editMode: 'ask' })
+    expect(instructions).toContain('call check_readiness')
+    expect(instructions).toContain('eplusout.err')
+    expect(instructions).toContain('Do not apply generic EUI thresholds')
+    expect(instructions).toContain('not a physical HVAC system')
+  })
+
   it('needs a key for hosted providers but not for a local server', () => {
     const s = defaultSettings()
     expect(s.editMode).toBe('ask')

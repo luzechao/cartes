@@ -12,6 +12,7 @@
  * when asked). Every edit is undoable with `undo`.
  */
 import { readFileSync, writeFileSync } from 'node:fs'
+import { readFile } from 'node:fs/promises'
 import { basename, extname } from 'node:path'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { z } from 'zod'
@@ -19,6 +20,9 @@ import { localBundle } from '@idfkit/schemas/node'
 import { ModelSession, SessionError } from './session.js'
 import { sessionTools } from './tools.js'
 import { setSchemaBundle } from '../schema/index.js'
+import { exampleInput, exampleLibrary, fetchRemoteExample } from './examples.js'
+import { datasetImportInput, datasetInput, datasetLibrary, planDatasetImport } from './datasets.js'
+import { manualInput, readManualSection } from './manual.js'
 
 setSchemaBundle(localBundle())
 
@@ -55,6 +59,86 @@ export function createCartesServer(session = new ModelSession()): McpServer {
     if (tool.input) server.registerTool(tool.name, { description: tool.description, inputSchema: tool.input }, call)
     else server.registerTool(tool.name, { description: tool.description }, () => call({}))
   }
+
+  server.registerTool(
+    'example_library',
+    {
+      description: 'Search the catalog of EnergyPlus examples for the bundled engine version. Inspecting a non-bundled example fetches that one public file from the pinned GitHub commit.',
+      inputSchema: exampleInput,
+    },
+    async (args) => {
+      try {
+        const result = await exampleLibrary(args, (name, bundled) =>
+          bundled ? readFile(new URL(`../../public/examples/${name}`, import.meta.url), 'utf8') : fetchRemoteExample(name),
+        )
+        return run(() => result)
+      } catch (error) {
+        return { content: [{ type: 'text', text: error instanceof Error ? error.message : String(error) }], isError: true }
+      }
+    },
+  )
+
+  server.registerTool(
+    'dataset_library',
+    {
+      description: 'Search filenames in the bundled engine version’s EnergyPlus DataSets, inspect classes/objects, or build a bounded read-only import plan. Use import_dataset to import a complete, compatible dependency closure.',
+      inputSchema: datasetInput,
+    },
+    async (args) => {
+      try {
+        const result = await datasetLibrary(args)
+        return run(() => result)
+      } catch (error) {
+        return { content: [{ type: 'text', text: error instanceof Error ? error.message : String(error) }], isError: true }
+      }
+    },
+  )
+
+  server.registerTool(
+    'import_dataset',
+    {
+      description: 'Import one named object and its IDD-referenced dependencies from the pinned EnergyPlus DataSet into the open model. Requires a complete, unambiguous plan, matching EnergyPlus major/minor version, resolvable references, and conflict-free names. All checks run before a single undoable edit; existing identical objects are reused.',
+      inputSchema: datasetImportInput,
+    },
+    async (args) => {
+      try {
+        await session.prepare()
+        session.summary()
+        const plan = await planDatasetImport(args)
+        if (plan.truncated) throw new SessionError('Cannot import a truncated DataSet plan. Increase the plan limit or choose a smaller dependency closure.')
+        if (plan.references.some((reference) => reference.status === 'ambiguous')) {
+          throw new SessionError('Cannot import a DataSet plan with ambiguous IDD references.')
+        }
+        const result = session.importDatasetObjects(plan.version, plan.objects.map((object) => ({
+          class: object.class,
+          name: object.name,
+          fields: object.fields.map(({ index, value }) => ({ index, value })),
+        })))
+        return run(() => ({ source: { file: plan.file, version: plan.version, root: plan.root }, ...result }))
+      } catch (error) {
+        return { content: [{ type: 'text', text: error instanceof Error ? error.message : String(error) }], isError: true }
+      }
+    },
+  )
+
+  server.registerTool(
+    'read_manual_section',
+    {
+      description: 'Fetch a version-matched object section from the online EnergyPlus I/O Reference at docs.idfkit.com, paged as plain text. Sends the public object-class documentation URL to that site.',
+      inputSchema: manualInput,
+    },
+    async (args) => {
+      try {
+        await session.prepare()
+        const url = session.describeClass(args.class).docs
+        if (!url) throw new SessionError(`No manual URL is available for ${args.class}.`)
+        const result = await readManualSection(url, args)
+        return run(() => result)
+      } catch (error) {
+        return { content: [{ type: 'text', text: error instanceof Error ? error.message : String(error) }], isError: true }
+      }
+    },
+  )
 
   server.registerTool(
     'save_idf',

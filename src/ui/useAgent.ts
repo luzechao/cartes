@@ -91,6 +91,8 @@ export function useAgent(bridge: React.RefObject<AgentBridge>): Agent {
       afterEdit: () => bridge.current.afterEdit(),
       runPython: (code) => bridge.current.runPython(code),
       runSimulation: () => bridge.current.runSimulation(),
+      runScenarios: (scenarios, modelName, signal) => bridge.current.runScenarios(scenarios, modelName, signal),
+      readTimeseries: (args) => bridge.current.readTimeseries(args),
       queryResults: (sql, params) => bridge.current.queryResults(sql, params),
       outputText: (name) => bridge.current.outputText(name),
       useWeather: (id) => bridge.current.useWeather(id),

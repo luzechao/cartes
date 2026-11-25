@@ -5,17 +5,20 @@
  */
 import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { versionNote } from '../simulate/index.js'
+import { scenarioArchiveName, scenarioStore, type SavedScenario } from '../simulate/scenarioStore.js'
+import { useDialog } from './Dialog.js'
 import type { Simulation } from './useSimulation.js'
 
 interface SimulatePanelProps {
   simulation: Simulation
   idfVersion: string | undefined
+  hasModel: boolean
 }
 
 type View = 'console' | 'messages' | 'files'
 type MessageFilter = 'problems' | 'all'
 
-export function SimulatePanel({ simulation, idfVersion }: SimulatePanelProps): React.JSX.Element {
+export function SimulatePanel({ simulation, idfVersion, hasModel }: SimulatePanelProps): React.JSX.Element {
   const { engine, result, running, log } = simulation
   const [view, setView] = useState<View>('console')
   const [filter, setFilter] = useState<MessageFilter>('problems')
@@ -24,8 +27,8 @@ export function SimulatePanel({ simulation, idfVersion }: SimulatePanelProps): R
   const pinnedScrollTop = useRef(0)
 
   useEffect(() => {
-    simulation.loadEngine()
-  }, [simulation.loadEngine])
+    if (hasModel) simulation.loadEngine()
+  }, [hasModel, simulation.loadEngine])
 
   // Keep the console scrolled to the newest line unless the user scrolled up to read. The status card above it
   // changes height when a run starts or ends, so re-pin then too.
@@ -36,7 +39,7 @@ export function SimulatePanel({ simulation, idfVersion }: SimulatePanelProps): R
     pinnedScrollTop.current = el.scrollTop
   }, [log, view, running, result])
 
-  const note = versionNote(idfVersion)
+  const note = hasModel ? versionNote(idfVersion) : undefined
   const problems = result?.messages.filter((m) => m.severity !== 'warning') ?? []
   const messages = filter === 'all' ? (result?.messages ?? []) : problems
 
@@ -50,7 +53,8 @@ export function SimulatePanel({ simulation, idfVersion }: SimulatePanelProps): R
               {engine.info.seconds.toFixed(1)} s
             </>
           )}
-          {(engine.state === 'loading' || engine.state === 'idle') && (
+          {engine.state === 'idle' && <>Open a model to load EnergyPlus.</>}
+          {engine.state === 'loading' && (
             <>Loading EnergyPlus and Pyodide (~45 MB, cached after the first visit)…</>
           )}
           {engine.state === 'error' && <span className="simulate-panel__error">Engine failed to load: {engine.message}</span>}
@@ -146,8 +150,9 @@ export function SimulatePanel({ simulation, idfVersion }: SimulatePanelProps): R
 
       {view === 'files' && (
         <div className="simulate-panel__list">
+          <strong>Current run</strong>
           {simulation.outputs.length === 0 ? (
-            <div className="validation-panel__empty">No output files yet.</div>
+            <div className="validation-panel__empty">No current output files.</div>
           ) : (
             simulation.outputs.map((file) => (
               <a key={file.name} className="simulate-panel__file-row" href={file.url} download={file.name}>
@@ -156,9 +161,97 @@ export function SimulatePanel({ simulation, idfVersion }: SimulatePanelProps): R
               </a>
             ))
           )}
+          <SavedScenarios runs={simulation.savedScenarios} storageError={simulation.scenarioStorageError} />
         </div>
       )}
     </div>
+  )
+}
+
+function SavedScenarios({ runs, storageError }: { runs: SavedScenario[]; storageError: string | undefined }): React.JSX.Element {
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | undefined>()
+  const [download, setDownload] = useState<{ id: number; url: string; name: string; label: string } | undefined>()
+  const mounted = useRef(true)
+  const dialog = useDialog()
+  useEffect(() => {
+    mounted.current = true
+    return () => { mounted.current = false }
+  }, [])
+  useEffect(() => () => { if (download) URL.revokeObjectURL(download.url) }, [download])
+
+  async function prepare(run: SavedScenario, file?: { kind: 'model' | 'output'; name: string }): Promise<void> {
+    setBusy(true)
+    setError(undefined)
+    setDownload(undefined)
+    try {
+      const bytes = file === undefined ? await scenarioStore.archive(run.id) : await scenarioStore.file(run.id, file.kind, file.name)
+      if (mounted.current) {
+        const url = URL.createObjectURL(new Blob([Uint8Array.from(bytes).buffer], {
+          type: file === undefined ? 'application/zip' : 'application/octet-stream',
+        }))
+        const safeName = file?.name.replace(/[\\/\x00-\x1f]/g, '_')
+        setDownload({
+          id: run.id, url, name: file === undefined ? scenarioArchiveName(run) : safeName === '.' || safeName === '..' ? 'output' : safeName || 'output',
+          label: file === undefined ? 'ZIP' : file.name,
+        })
+      }
+    } catch (reason) {
+      if (mounted.current) setError(`Could not prepare download: ${reason instanceof Error ? reason.message : String(reason)}`)
+    } finally {
+      if (mounted.current) setBusy(false)
+    }
+  }
+
+  async function remove(run: SavedScenario): Promise<void> {
+    const confirmed = await dialog.ask({
+      title: 'Delete saved scenario?',
+      message: [`Delete the locally saved files for "${run.result.name}"? Downloaded archives are not affected.`],
+      confirmLabel: 'Delete', danger: true,
+    })
+    if (!confirmed) return
+    setBusy(true)
+    setError(undefined)
+    try {
+      await scenarioStore.remove(run.id)
+      if (download?.id === run.id) setDownload(undefined)
+    } catch (reason) {
+      setError(`Could not delete scenario: ${reason instanceof Error ? reason.message : String(reason)}`)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <section className="simulate-panel__saved">
+      <strong>Saved scenarios ({runs.length})</strong>
+      <p>Stored locally in this browser, including across reloads. Storage may be cleared or evicted; download files for safekeeping. ZIPs are limited to 256 MiB and need extra memory.</p>
+      {storageError && <div className="simulate-panel__error">Scenario storage unavailable: {storageError}</div>}
+      {error && <div className="simulate-panel__error">{error}</div>}
+      {runs.length === 0 && !storageError && <div className="validation-panel__empty">No saved scenarios.</div>}
+      {runs.map((run) => (
+        <details key={run.id} className="simulate-panel__saved-run">
+          <summary>{run.result.name} · {run.result.status}</summary>
+          <div className="simulate-panel__hint">
+            #{run.id} · {run.modelName} · {new Date(run.createdAt).toLocaleString()} · {run.outputNames.length} files · {formatSize(run.outputBytes)}
+          </div>
+          <div className="simulate-panel__hint">{run.weather} · EnergyPlus {run.engineVersion}</div>
+          <div className="simulate-panel__saved-actions">
+            <button type="button" disabled={busy} onClick={() => void prepare(run)}>{busy ? 'Working…' : 'Prepare ZIP'}</button>
+            <button type="button" disabled={busy} onClick={() => void remove(run)}>Delete</button>
+          </div>
+          {download?.id === run.id && <a className="simulate-panel__file-row" href={download.url} download={download.name}>Download {download.label}</a>}
+          <details className="simulate-panel__saved-files">
+            <summary>Individual files</summary>
+            <button type="button" disabled={busy} onClick={() => void prepare(run, { kind: 'model', name: 'scenario.idf' })}>Simulated model (scenario.idf)</button>
+            {run.outputNames.map((name) => (
+              <button key={name} type="button" disabled={busy} onClick={() => void prepare(run, { kind: 'output', name })}>{name}</button>
+            ))}
+          </details>
+        </details>
+      ))}
+      {dialog.element}
+    </section>
   )
 }
 

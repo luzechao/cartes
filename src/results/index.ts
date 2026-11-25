@@ -252,6 +252,26 @@ export interface SeriesStats {
   values?: Array<{ at: string; value: number }>
 }
 
+export interface SeriesChart {
+  kind: 'line'
+  title: string
+  units: string
+  points: Array<{ label: string; value: number }>
+}
+
+/** Plot every reported point when small, otherwise the existing monthly aggregation. */
+export function seriesChart(series: SeriesStats): { chart: SeriesChart; note: string } {
+  const points = series.values?.map((point) => ({ label: point.at, value: point.value }))
+    ?? series.monthly?.map((point) => ({ label: `Month ${point.month}`, value: point.value }))
+  if (!points?.length) throw new ResultsError('This series has no plottable values.')
+  return {
+    chart: { kind: 'line', title: `${series.name} — ${series.key}`, units: series.units, points },
+    note: series.values
+      ? `${series.frequency} values; timestamps omit the year. Points are equally spaced in the chart.`
+      : `Monthly ${series.aggregation === 'Sum' ? 'sums' : 'means'} grouped across included run periods and years; points are equally spaced, even if months are missing.`,
+  }
+}
+
 const MAX_POINTS = 48
 
 const FREQ_RANK = ['Timestep', 'Zone Timestep', 'HVAC System Timestep', 'Hourly', 'Daily', 'Monthly', 'Run Period', 'Annual']

@@ -11,6 +11,9 @@ import type {
   WorkerRequest,
   WorkerResponse,
 } from './protocol.js'
+import { queryOverPython } from '../results/python.js'
+import { timeseries, type Cell, type SeriesStats } from '../results/index.js'
+import { runScenarioBatch, type RetainScenario, type ScenarioBatchResult, type ScenarioInput } from './scenarios.js'
 
 /** The subset of `Worker` the client needs, so tests can substitute a fake. */
 export interface WorkerLike {
@@ -58,6 +61,35 @@ export class SimulationClient {
     return this.#enqueue(() => this.#call<SimulationOutcome>({ type: 'run', request }))
   }
 
+  /** Keep each run and its summary queries together, with no other worker jobs interleaved. */
+  runScenarios(scenarios: readonly ScenarioInput[], common: Omit<SimulationRequest, 'idf'>, signal?: AbortSignal, retain?: RetainScenario): Promise<ScenarioBatchResult> {
+    const generation = this.#generation
+    const checkGeneration = () => {
+      if (generation !== this.#generation) throw new Error('Python was restarted')
+    }
+    return this.#enqueue(async () => {
+      const result = await runScenarioBatch(scenarios, common, (request) => {
+        checkGeneration()
+        return this.#call<SimulationOutcome>({ type: 'run', request })
+      }, { query: (sql, params = []) => this.#queryLastRun(sql, params, checkGeneration) }, () => signal?.aborted === true, retain)
+      checkGeneration()
+      return result
+    })
+  }
+
+  /** Read an entire series analysis against one run without interleaving another worker job. */
+  readTimeseries(args: { name: string; key?: string | undefined; frequency?: string | undefined }): Promise<SeriesStats[]> {
+    const generation = this.#generation
+    const checkGeneration = () => {
+      if (generation !== this.#generation) throw new Error('Python was restarted')
+    }
+    return this.#enqueue(async () => {
+      const result = await timeseries({ query: (sql, params = []) => this.#queryLastRun(sql, params, checkGeneration) }, args)
+      checkGeneration()
+      return result
+    })
+  }
+
   /** Run Python in the engine's interpreter, streaming what it prints to `onOutput`. */
   exec(code: string, onOutput: (stream: OutputStream, line: string) => void): Promise<ExecOutcome> {
     return this.#enqueue(() => this.#call<ExecOutcome>({ type: 'exec', code }, onOutput))
@@ -84,6 +116,7 @@ export class SimulationClient {
 
   dispose(): void {
     this.#worker.terminate()
+    this.#generation++
     this.#rejectAll(new Error('Simulation client disposed'))
   }
 
@@ -129,6 +162,17 @@ export class SimulationClient {
     for (const pending of this.#pending.values()) pending.reject(error)
     this.#pending.clear()
     this.#outputListeners.clear()
+  }
+
+  #queryLastRun(sql: string, params: Cell[], checkGeneration: () => void) {
+    return queryOverPython(async (code) => {
+      checkGeneration()
+      let stdout = ''
+      const outcome = await this.#call<ExecOutcome>({ type: 'exec', code }, (stream, line) => {
+        if (stream === 'out') stdout += `${line}\n`
+      })
+      return { ...outcome, stdout }
+    }, sql, params)
   }
 
   #call<T>(message: Call, onOutput?: (stream: OutputStream, line: string) => void): Promise<T> {

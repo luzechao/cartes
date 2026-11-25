@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { SimulationClient, type WorkerLike } from '../../src/simulate/client.js'
 import type { WorkerRequest, WorkerResponse } from '../../src/simulate/protocol.js'
 
@@ -9,6 +9,8 @@ class FakeWorker implements WorkerLike {
   failRuns = false
   /** Leave exec requests unanswered, like Python stuck in a loop. */
   hangExec = false
+  sqlEnabled = false
+  lastIdf = ''
   #listeners: ((event: MessageEvent<WorkerResponse>) => void)[] = []
 
   postMessage(message: WorkerRequest): void {
@@ -22,16 +24,45 @@ class FakeWorker implements WorkerLike {
         })
       } else if (message.type === 'exec') {
         if (this.hangExec) return
-        this.emit({ id: message.id, type: 'output', stream: 'out', line: `ran ${message.code}` })
+        if (this.sqlEnabled && message.code.includes('@@cartes-sql@@')) {
+          let result: { columns: string[]; rows: Array<Array<string | number | null>> }
+          if (message.code.includes('ReportDataDictionaryIndex AS id')) {
+            result = { columns: ['id', 'KeyValue', 'Name', 'ReportingFrequency', 'Units', 'Type'],
+              rows: [[1, this.lastIdf, 'Temperature', 'Hourly', 'C', 'Avg']] }
+          } else if (message.code.includes('SELECT EnvironmentPeriodIndex FROM')) {
+            result = { columns: ['EnvironmentPeriodIndex'], rows: [[1]] }
+          } else if (message.code.includes('count(*) AS n')) {
+            result = { columns: ['n', 'mean', 'total'], rows: [[2, 1, 2]] }
+          } else if (message.code.includes('ORDER BY d.Value ASC')) {
+            result = { columns: ['Value', 'Month', 'Day', 'Hour', 'Minute'], rows: [[-1, 1, 1, 1, 0]] }
+          } else if (message.code.includes('ORDER BY d.Value DESC')) {
+            result = { columns: ['Value', 'Month', 'Day', 'Hour', 'Minute'], rows: [[3, 1, 1, 2, 0]] }
+          } else if (message.code.includes('t.Month AS month')) {
+            result = { columns: ['month', 'value'], rows: [[1, 1]] }
+          } else if (message.code.includes('ORDER BY d.TimeIndex')) {
+            result = { columns: ['Value', 'Month', 'Day', 'Hour', 'Minute'], rows: [[-1, 1, 1, 1, 0], [3, 1, 1, 2, 0]] }
+          } else if (message.code.includes('SELECT EnvironmentName')) {
+            result = { columns: ['EnvironmentName'], rows: [['RUN PERIOD']] }
+          } else {
+            result = { columns: ['TableName', 'RowName', 'ColumnName', 'Units', 'Value'], rows: [
+              ['Site and Source Energy', 'Total Site Energy', 'Total Energy', 'GJ', this.lastIdf === 'first' ? '1' : '2'],
+            ] }
+          }
+          this.emit({ id: message.id, type: 'output', stream: 'out', line: `@@cartes-sql@@${JSON.stringify(result)}` })
+        } else {
+          this.emit({ id: message.id, type: 'output', stream: 'out', line: `ran ${message.code}` })
+        }
         this.emit({ id: message.id, type: 'exec', outcome: { ok: true, value: '42', seconds: 0 } })
       } else if (this.failRuns) {
         this.emit({ id: message.id, type: 'error', message: 'boom' })
       } else {
+        this.lastIdf = message.request.idf
         this.emit({ type: 'log', line: `running ${message.request.idf}` })
         this.emit({
           id: message.id,
           type: 'run',
-          outcome: { exitCode: 0, summary: undefined, messages: [], outputs: {}, args: [], seconds: 0 },
+          outcome: { exitCode: 0, summary: this.sqlEnabled ? { success: true, raw: 'Completed', warnings: 0, severe: 0 } : undefined,
+            messages: [], outputs: this.sqlEnabled ? { 'eplusout.sql': new Uint8Array([1]) } : {}, args: [], seconds: 0 },
         })
       }
     }, 0)
@@ -85,6 +116,62 @@ describe('SimulationClient', () => {
     expect(workers[0]!.requests.map(label)).toEqual(['init', 'first', 'exec:x', 'second'])
     expect(lines).toEqual(['running first', 'running second'])
     expect(output).toEqual(['out:ran x'])
+  })
+
+  it('reserves the worker through each batch run and its summary queries', async () => {
+    const { client, workers } = fakeClient()
+    workers[0]!.sqlEnabled = true
+    const [batch] = await Promise.all([
+      client.runScenarios([{ name: 'A', idf: 'first' }, { name: 'B', idf: 'second' }], {}),
+      client.run({ idf: 'later' }),
+    ])
+    expect(batch.scenarios.map((result) => result.results?.siteEnergy?.gj)).toEqual([1, 2])
+    const calls = workers[0]!.requests.filter((request) => request.type !== 'init')
+    expect(calls.map((request) => request.type === 'run' ? request.request.idf : 'query'))
+      .toEqual(['first', 'query', 'query', 'second', 'query', 'query', 'later'])
+  })
+
+  it('waits for retained outputs before the next scenario or queued worker job', async () => {
+    const { client, workers } = fakeClient()
+    workers[0]!.sqlEnabled = true
+    let release: (() => void) | undefined
+    const retained = new Promise<void>((resolve) => { release = resolve })
+    const batch = client.runScenarios([{ name: 'A', idf: 'first' }, { name: 'B', idf: 'second' }], {}, undefined,
+      async (scenario) => { if (scenario.name === 'A') await retained })
+    const later = client.run({ idf: 'later' })
+    await vi.waitFor(() => expect(workers[0]!.requests.filter((request) => request.type === 'exec')).toHaveLength(2))
+    expect(workers[0]!.requests.filter((request) => request.type === 'run').map(label)).toEqual(['first'])
+    release!()
+    expect((await batch).scenarios.map((result) => result.retained)).toEqual([true, true])
+    await later
+    expect(workers[0]!.requests.filter((request) => request.type === 'run').map(label)).toEqual(['first', 'second', 'later'])
+  })
+
+  it('reserves the worker across all time-series queries', async () => {
+    const { client, workers } = fakeClient()
+    workers[0]!.sqlEnabled = true
+    await client.run({ idf: 'first' })
+    const [series] = await Promise.all([
+      client.readTimeseries({ name: 'Temperature' }),
+      client.run({ idf: 'later' }),
+    ])
+    expect(series[0]).toMatchObject({ key: 'first', count: 2, min: { value: -1 }, max: { value: 3 } })
+    const calls = workers[0]!.requests.filter((request) => request.type !== 'init')
+    expect(calls.at(-1)).toMatchObject({ type: 'run', request: { idf: 'later' } })
+    expect(calls.slice(1, -1).every((request) => request.type === 'exec')).toBe(true)
+    expect(calls.slice(1, -1)).toHaveLength(7)
+  })
+
+  it('does not continue a batch on a replacement worker after restart', async () => {
+    const { client, workers } = fakeClient()
+    workers[0]!.sqlEnabled = true
+    workers[0]!.hangExec = true
+    const batch = client.runScenarios([{ name: 'A', idf: 'first' }, { name: 'B', idf: 'second' }], {})
+    const rejected = expect(batch).rejects.toThrow('Python was restarted')
+    await vi.waitFor(() => expect(workers[0]!.requests.some((request) => request.type === 'exec')).toBe(true))
+    client.restart()
+    await rejected
+    expect(workers[1]!.requests).toEqual([])
   })
 
   it('returns the REPL outcome', async () => {
